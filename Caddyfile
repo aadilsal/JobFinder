@@ -1,0 +1,5 @@
+# Automatic HTTPS (Let's Encrypt) in front of jobkit. HTTPS is required for the PWA and push notifications.
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy jobkit:8000
+}

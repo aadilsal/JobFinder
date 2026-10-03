@@ -1,0 +1,49 @@
+{
+  "name": "Alex Example",
+  "headline": "Full Stack Engineer | React, Node.js, Python",
+  "location": "Lahore, Pakistan",
+  "email": "alex@example.com",
+  "phone": "+92 300 0000000",
+  "links": {
+    "LinkedIn": "linkedin.com/in/alex-example",
+    "GitHub": "github.com/alex-example",
+    "Portfolio": "alex-example.dev"
+  },
+  "years_experience_text": "2+ years of professional experience",
+  "base_summary": "Full stack engineer building React and Next.js frontends and Node.js and Python services on PostgreSQL, deployed on AWS with Docker. Recent work covers payments, multi-tenant SaaS and LLM features.",
+  "target_roles": ["Full Stack Engineer", "Backend Engineer", "Software Engineer"],
+  "work_preferences": "Remote worldwide, or onsite in Lahore",
+  "skills": {
+    "Languages": ["JavaScript", "TypeScript", "Python", "SQL"],
+    "Frontend": ["React.js", "Next.js", "Tailwind CSS"],
+    "Backend": ["Node.js", "Express", "FastAPI", "REST APIs"],
+    "Databases": ["PostgreSQL", "MongoDB", "Redis"],
+    "Cloud & DevOps": ["AWS", "Docker", "CI/CD"]
+  },
+  "experience": [
+    {
+      "id": "acme",
+      "company": "Acme SaaS",
+      "title": "Software Engineer",
+      "location": "Lahore",
+      "dates": "Jan 2024 - Present",
+      "bullets": [
+        "Built a billing service with idempotent Stripe webhooks, cutting failed payments by ~20%",
+        "Reduced dashboard load time by ~30% with code splitting and API caching"
+      ]
+    }
+  ],
+  "projects": [
+    {
+      "id": "taskflow",
+      "name": "TaskFlow - Team Task Manager",
+      "tech": "Next.js, Node.js, PostgreSQL",
+      "url": "github.com/alex-example/taskflow",
+      "bullets": ["Built and launched a real-time task board used by 3 student teams"]
+    }
+  ],
+  "education": [
+    {"school": "Example University", "degree": "BS Computer Science", "dates": "2020 - 2024"}
+  ],
+  "certifications": ["AWS Cloud Practitioner"]
+}

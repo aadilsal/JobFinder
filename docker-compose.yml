@@ -1,0 +1,29 @@
+# docker compose up -d --build
+# DOMAIN comes from .env (deploy/setup-vm.sh writes it); secrets come from .env.local
+services:
+  jobkit:
+    build: .
+    restart: unless-stopped
+    env_file: [.env.local]
+    environment:
+      PUBLIC_URL: https://${DOMAIN}
+    volumes:
+      - jobkit-data:/app/data
+    expose: ["8000"]
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [jobkit]
+
+volumes:
+  jobkit-data:
+  caddy-data:
+  caddy-config:

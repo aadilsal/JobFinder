@@ -1,0 +1,22 @@
+{
+  "name": "jobkit - job search copilot",
+  "short_name": "jobkit",
+  "description": "Finds jobs that fit you and writes a tailored CV, cover letter and recruiter emails.",
+  "id": "/",
+  "start_url": "/#/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b0f17",
+  "theme_color": "#2563eb",
+  "categories": ["productivity", "business"],
+  "icons": [
+    {"src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ],
+  "shortcuts": [
+    {"name": "Jobs", "url": "/#/jobs"},
+    {"name": "Tailor for a job", "url": "/#/apply"},
+    {"name": "Applications", "url": "/#/applications"}
+  ]
+}

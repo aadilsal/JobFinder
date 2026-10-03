@@ -1,0 +1,9 @@
+.env
+.env.local
+data/
+out/
+.git/
+.venv/
+venv/
+__pycache__/
+*.pyc
