@@ -5,6 +5,8 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+# Extra sources: Indeed (incl. Pakistan), Glassdoor, Google Jobs, ZipRecruiter. Optional - the build continues without it.
+RUN pip install --no-cache-dir python-jobspy || echo "python-jobspy unavailable, skipping that source"
 
 COPY . .
 RUN useradd --create-home jobkit && mkdir -p /app/data && chown -R jobkit /app/data

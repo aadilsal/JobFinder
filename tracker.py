@@ -4,7 +4,8 @@ from datetime import date, timedelta
 import config
 
 FIELDS = ["id", "date", "company", "role", "match", "status", "applied_on", "follow_up",
-          "contact", "contact_email", "job_url", "job_key", "folder", "notes"]
+          "contact", "contact_email", "job_url", "job_key", "folder", "notes", "source", "theme"]
+POSITIVE = {"interviewing", "offer"}     # counted as "got a response" in insights
 STATUSES = ["drafted", "applied", "follow-up sent", "interviewing", "offer", "rejected", "ghosted"]
 ACTIVE = {"applied", "follow-up sent", "interviewing"}
 FOLLOW_UP_DAYS = 7

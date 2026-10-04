@@ -72,10 +72,45 @@ def get(url, quiet=False, headers=None, **kw):
         return None
 
 
-def job(source, title, company, location, url, desc, posted=""):
+def job(source, title, company, location, url, desc, posted="", salary=""):
+    d = strip_html(_s(desc))[:6000]
+    label, usd = extract_salary(_s(salary)) if _s(salary) else extract_salary(d[:4000])
     return dict(source=source, title=_s(title).strip(), company=_s(company).strip(),
-                location=_s(location).strip(), url=_s(url), desc=strip_html(_s(desc))[:6000],
-                date=norm_date(posted))
+                location=_s(location).strip(), url=_s(url), desc=d, date=norm_date(posted),
+                salary=label, salary_usd=usd)
+
+
+# ---- salary ----------------------------------------------------------------
+# rough rates to compare salaries across currencies (USD per unit); good enough for a "minimum salary" filter
+RATES = {"$": 1, "usd": 1, "us$": 1, "€": 1.08, "eur": 1.08, "£": 1.27, "gbp": 1.27, "pkr": 0.0036, "rs": 0.0036,
+         "rs.": 0.0036, "inr": 0.012, "₹": 0.012, "cad": 0.73, "aud": 0.66, "aed": 0.27, "sar": 0.27}
+PER_YEAR = {"year": 1, "yr": 1, "annum": 1, "annual": 1, "month": 12, "mo": 12, "week": 50, "wk": 50, "hour": 2000, "hr": 2000, "day": 230}
+_CUR = r"(\$|US\$|USD|€|EUR|£|GBP|PKR|Rs\.?|INR|₹|CAD|AUD|AED|SAR)"
+_NUM = r"(\d{1,3}(?:[,\s]\d{3})+|\d+(?:\.\d+)?)\s?([kK])?"
+SALARY_RE = re.compile(_CUR + r"\s?" + _NUM + r"(?:\s?(?:-|–|—|to)\s?" + _CUR + r"?\s?" + _NUM + r")?"
+                       r"(?:\s?(?:/|per|a|an)\s?(year|yr|annum|month|mo|week|wk|hour|hr|day))?", re.I)
+
+
+def extract_salary(text):
+    """('$80k - $100k /year', 80000) or ('', 0). The number is the low end, annual, in rough USD."""
+    for m in SALARY_RE.finditer(text or ""):
+        cur, a, ak, _, b, bk, per = m.groups()
+        try:
+            low = float(re.sub(r"[,\s]", "", a)) * (1000 if ak else 1)
+        except ValueError:
+            continue
+        rate = RATES.get(cur.lower(), 1)
+        if per:
+            guesses = [per.lower()]
+        elif low >= 1000:   # no period given: yearly if that's plausible, else monthly (e.g. "Rs. 180,000")
+            guesses = ["year", "month"]
+        else:
+            continue        # "$5 gift card", "$50 stipend": not a salary
+        for period in guesses:
+            usd = low * PER_YEAR.get(period, 1) * rate
+            if 3000 <= usd <= 1_500_000:
+                return m.group(0).strip(), int(usd)
+    return "", 0
 
 
 def _pmap(fn, items, workers=6):
@@ -99,15 +134,16 @@ def remotive(cfg):
         r = get("https://remotive.com/api/remote-jobs", params={"category": "software-dev", "search": q})
         for j in (r.json().get("jobs", []) if r else []):
             out.append(job("Remotive", j["title"], j["company_name"], j.get("candidate_required_location"),
-                           j["url"], j.get("description"), j.get("publication_date")))
+                           j["url"], j.get("description"), j.get("publication_date"), j.get("salary")))
     return out
 
 
 def remoteok(cfg):
     r = get("https://remoteok.com/api")
     data = [j for j in (r.json() if r else []) if isinstance(j, dict) and j.get("position")]
-    return [job("RemoteOK", j["position"], j.get("company"), j.get("location"), j.get("url"),
-                j.get("description"), j.get("date")) for j in data]
+    return [job("RemoteOK", j["position"], j.get("company"), j.get("location"), j.get("url"), j.get("description"),
+                j.get("date"), f"${j['salary_min']:,} - ${j.get('salary_max') or j['salary_min']:,} /year"
+                if j.get("salary_min") else "") for j in data]
 
 
 def arbeitnow(cfg):
@@ -131,9 +167,11 @@ def himalayas(cfg):
             break
         for j in data:
             locs = ", ".join(j.get("locationRestrictions") or []) or "Worldwide"
+            sal = (f"{j.get('currency') or 'USD'} {j['minSalary']:,} - {j.get('maxSalary') or j['minSalary']:,} /year"
+                   if isinstance(j.get("minSalary"), (int, float)) and j["minSalary"] else "")
             out.append(job("Himalayas", j.get("title"), j.get("companyName"), locs,
                            j.get("applicationLink") or j.get("guid"), j.get("description") or j.get("excerpt"),
-                           j.get("pubDate")))
+                           j.get("pubDate"), sal))
         offset += len(data)
     return out
 
@@ -143,7 +181,9 @@ def jobicy(cfg):
     for params in ({"count": 100}, {"count": 100, "industry": "dev"}):
         r = get("https://jobicy.com/api/v2/remote-jobs", params=params)
         out += [job("Jobicy", j.get("jobTitle"), j.get("companyName"), j.get("jobGeo"), j.get("url"),
-                    j.get("jobDescription"), j.get("pubDate")) for j in (r.json().get("jobs", []) if r else [])]
+                    j.get("jobDescription"), j.get("pubDate"),
+                    f"{j.get('salaryCurrency') or 'USD'} {j['annualSalaryMin']} - {j.get('annualSalaryMax') or j['annualSalaryMin']} /year"
+                    if j.get("annualSalaryMin") else "") for j in (r.json().get("jobs", []) if r else [])]
     return out
 
 
@@ -355,6 +395,21 @@ def score(j, cfg):
     return s, ", ".join(hits[:8]) + (f" | {' '.join(notes)}" if notes else "")
 
 
+ATS_URL = re.compile(r"(?:boards|job-boards)\.greenhouse\.io/(?:embed/job_board\?for=)?([\w-]+)|jobs\.lever\.co/([\w-]+)"
+                     r"|jobs\.ashbyhq\.com/([\w.-]+)", re.I)
+
+
+def detect_ats(url):
+    """('greenhouse', 'vercel') from a job URL, so we can watch that company's whole job board."""
+    m = ATS_URL.search(url or "")
+    if not m:
+        return None
+    for ats, slug in zip(("greenhouse", "lever", "ashby"), m.groups()):
+        if slug:
+            return ats, slug.lower()
+    return None
+
+
 def _read(path, default):
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else default
 
@@ -427,11 +482,23 @@ def fetch(cfg=None, only=None, log=print):
 
 def rank(pool, cfg, uid, log=print):
     """Score the shared pool with one user's keywords; save data/users/<uid>/jobs.json (+ jobs.csv)."""
+    import prefs
     seen_file = _user_file(uid, "seen_jobs.json")
     seen = set(_read(seen_file, []))
+    learned = prefs.weights(uid)            # from the user's thumbs up / down
+    watched = {c.lower() for c in cfg.get("watch_companies", [])}
     rows = []
     for j in pool:
         s, why = score(j, cfg)
+        if s < 0:
+            continue
+        nudge = prefs.adjust(j, learned)
+        if nudge:
+            s += nudge
+            why += f" | {'like your picks' if nudge > 0 else 'unlike your picks'}"
+        if (j.get("company") or "").lower() in watched:
+            s += 10
+            why += " | watched company"
         if s >= cfg["min_score"]:
             rows.append({**j, "score": s, "why": why, "new": j["key"] not in seen})
     rows.sort(key=lambda r: (r["new"], r["score"], r["date"]), reverse=True)

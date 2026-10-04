@@ -301,20 +301,61 @@ def fallback(profile, role="Software Engineer"):
 MATCH_SYSTEM = """You are a strict technical recruiter screening one job for one candidate. Score how likely the candidate gets an interview, 0-100.
 Calibration: 90+ = meets essentially every hard requirement (stack, seniority/years, location/work authorisation) and most nice-to-haves; 75-89 = strong fit with one soft gap; 50-74 = plausible stretch; below 50 = missing a hard requirement.
 Hard blockers cap the score at 40: the job is restricted to a country/region the candidate cannot work from, requires clearly more years than the candidate has, or its core language/stack is absent from the profile.
-Use ONLY the profile. Return ONLY JSON: {"match": 0-100, "verdict": "one sentence", "strengths": ["max 3"], "gaps": ["max 3"]}"""
+Eligibility: read the small print (location limits, timezone overlap, citizenship/clearance, "must be based in", visa sponsorship) and decide if THIS candidate, living where they live, can take the job:
+"yes" = open to them, "no" = they can't (explain in a few words, e.g. "US residents only"), "unclear" = posting doesn't say.
+If the candidate's stated preferences (liked/rejected examples) are given, nudge the score by at most 10 toward what they like.
+Use ONLY the profile. Return ONLY JSON: {"match": 0-100, "verdict": "one sentence", "strengths": ["max 3"], "gaps": ["max 3"], "eligible": "yes|no|unclear", "eligibility": "max 8 words"}"""
 
 
-def match_job(j, profile):
-    """AI fit score for one scraped job (used for >=90 alerts). Compact context keeps it cheap."""
-    small = {k: profile[k] for k in ("location", "years_experience_text", "skills", "base_summary") if k in profile}
-    small["experience"] = [{k: e[k] for k in ("title", "company", "dates", "bullets")}
+def match_job(j, profile, prefs_text=""):
+    """AI fit score + can-they-actually-take-it check for one scraped job. Compact context keeps it cheap."""
+    small = {k: profile[k] for k in ("location", "work_preferences", "years_experience_text", "target_roles", "skills",
+                                     "base_summary") if profile.get(k)}
+    small["experience"] = [{k: e.get(k, "") for k in ("title", "company", "dates", "bullets")}
                            for e in profile["experience"] if e.get("include", True)]
-    small["projects"] = [{"name": p["name"], "tech": p["tech"]} for p in profile["projects"]]
-    prompt = (f"<candidate>\n{json.dumps(small)}\n</candidate>\n\n<job>\nTitle: {j['title']}\nCompany: {j['company']}\n"
-              f"Location: {j['location']}\nSource: {j['source']}\n\n{j['desc'][:6000]}\n</job>")
-    out = _ask(MATCH_SYSTEM, prompt, 600)
+    small["projects"] = [{"name": p["name"], "tech": p.get("tech", "")} for p in profile.get("projects", [])]
+    prompt = (f"<candidate>\n{json.dumps(small)}\n</candidate>\n\n"
+              + (f"<preferences>\n{prefs_text}\n</preferences>\n\n" if prefs_text else "")
+              + f"<job>\nTitle: {j['title']}\nCompany: {j['company']}\nLocation: {j['location']}\n"
+                f"Source: {j['source']}\n\n{j['desc'][:6000]}\n</job>")
+    out = _ask(MATCH_SYSTEM, prompt, 700)
     out["match"] = max(0, min(100, int(out.get("match", 0))))
+    if out.get("eligible") not in ("yes", "no", "unclear"):
+        out["eligible"] = "unclear"
+    if out["eligible"] == "no":
+        out["match"] = min(out["match"], 40)
     return out
+
+
+FORM_SYSTEM = """You fill in job application forms for one candidate. Use ONLY facts from their PROFILE, GITHUB PROJECTS and APPLICATION DEFAULTS.
+Write answers in first person, plain text, specific and short (most 40-120 words). No em dashes, no "passionate", no invented facts.
+If a needed fact is missing (salary, notice period, visa...), write a placeholder in [square brackets] for them to fill.
+Include: (1) every question the job posting itself asks applicants, then (2) the usual form questions:
+"Why do you want to work here?", "Why are you a good fit for this role?", "Tell us about yourself", "Describe a relevant project you're proud of",
+"What is your expected salary?", "What is your notice period / when can you start?", "Are you authorised to work in <location>? / Do you need sponsorship?",
+"How many years of experience do you have with <top 2-3 required skills>?" (one answer covering them), "Short cover note (max 300 characters)", and the links (LinkedIn, GitHub, portfolio).
+Return ONLY JSON: {"answers": [{"q": "question", "a": "answer"}]}"""
+
+PREP_SYSTEM = """You prepare one candidate for an interview. Use ONLY the job description and the candidate's profile; never invent company facts (say "check their website" instead).
+Return ONLY JSON:
+{"company_brief": "3-4 sentences on what the JD says about the company, team and product",
+ "focus": ["5 skills/areas this interview will probably test, from the JD"],
+ "questions": [{"q": "likely question", "type": "technical|behavioural|experience|system design", "answer": "how THIS candidate should answer, citing their real projects and numbers, 2-4 sentences"}],
+ "ask_them": ["5 smart questions the candidate can ask"],
+ "watch_out": ["2-4 gaps they may probe and how to handle each honestly"]}
+Give 10 questions: about 4 technical, 3 experience/project deep-dives, 2 behavioural, 1 system design."""
+
+
+def form_answers(profile, gh, jd, company="", role=""):
+    defaults = profile.get("application_defaults") or {}
+    prompt = (_context(profile, gh) + f"<application_defaults>\n{json.dumps(defaults)}\n</application_defaults>\n\n"
+              f"<job_description>\nCompany: {company}\nRole: {role}\n\n{jd[:10000]}\n</job_description>")
+    return _ask(FORM_SYSTEM, prompt, 3500).get("answers", [])
+
+
+def interview_prep(profile, gh, jd, company="", role=""):
+    prompt = _context(profile, gh) + f"<job_description>\nCompany: {company}\nRole: {role}\n\n{jd[:10000]}\n</job_description>"
+    return _ask(PREP_SYSTEM, prompt, 4000)
 
 
 def outreach(kind, profile, gh, company="", role="", recipient="", jd="", notes=""):

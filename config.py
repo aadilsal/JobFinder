@@ -46,6 +46,9 @@ DEFAULTS = {
     "ai_prefilter_score": 45,       # only keyword-score >= this gets sent to Claude (keeps cost low)
     "ai_score_top_n": 25,           # max jobs AI-scored per run, per user
     "heuristic_alert_score": 80,    # used for alerts only when ANTHROPIC_API_KEY is missing
+    "daily_digest": True,           # one morning notification with the day's best jobs
+    "digest_hour_utc": 4,           # 4 UTC = 9 am Pakistan time
+    "watch_companies": [],          # companies you liked/shortlisted: their new roles get a boost and an alert
     "cv_theme": "classic",
     "github_user": "",
     "ntfy_topic": "",

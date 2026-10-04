@@ -64,8 +64,11 @@ async function api(method, path, body) {
 }
 
 function toast(msg, ms = 3600) {
-  const t = Object.assign(document.createElement("div"), { className: "toast", textContent: msg, role: "status" });
+  const t = Object.assign(document.createElement("div"), { className: "toast", textContent: msg });
+  t.setAttribute("aria-hidden", "true");            // announced once via the live region below
   document.body.append(t);
+  const live = document.getElementById("sr-live");
+  if (live) { live.textContent = ""; setTimeout(() => (live.textContent = msg), 50); }
   setTimeout(() => t.remove(), ms);
 }
 
@@ -97,9 +100,31 @@ const KINDS = { cold_email: "Cold email to recruiter / hiring manager", linkedin
 function scoreBox(r) {
   if (r.ai_match != null) {
     const cls = r.ai_match >= (S.me?.threshold || 90) ? "s-hi" : r.ai_match >= 70 ? "s-mid" : "";
-    return html`<div class="score ${cls}" title="AI match: how likely you get an interview">${r.ai_match}<small>match</small></div>`;
+    return html`<div class="score ${cls}" title="AI match: how likely you get an interview" aria-label="AI match ${r.ai_match} percent">${r.ai_match}<small aria-hidden="true">match</small></div>`;
   }
-  return html`<div class="score" title="Keyword score (not AI-scored yet)">${r.score}<small>keywords</small></div>`;
+  return html`<div class="score" title="Keyword score (not AI-scored yet)" aria-label="Keyword score ${r.score}">${r.score}<small aria-hidden="true">keywords</small></div>`;
+}
+
+function eligBadge(r) {
+  if (r.eligible === "yes") return html`<span class="badge good" title="${r.eligibility || ""}">✓ Open to you</span>`;
+  if (r.eligible === "no") return html`<span class="badge bad" title="${r.eligibility || ""}">✗ ${r.eligibility || "Not open to you"}</span>`;
+  return "";
+}
+
+const salaryBadge = (r) => (r.salary ? html`<span class="badge acc" title="Listed salary">${r.salary}</span>` : "");
+
+function thumbs(r) {
+  return html`<span class="thumbs" role="group" aria-label="Rate this job">
+    <button class="btn sm ${r.feedback > 0 ? "on-up" : ""}" data-fb="1" data-key="${r.key}" aria-pressed="${r.feedback > 0}" title="More like this">\u{1F44D}<span class="sr-only">More like this</span></button>
+    <button class="btn sm ${r.feedback < 0 ? "on-down" : ""}" data-fb="-1" data-key="${r.key}" aria-pressed="${r.feedback < 0}" title="Not for me (hides it)">\u{1F44E}<span class="sr-only">Not for me</span></button></span>`;
+}
+
+async function sendFeedback(r, v) {
+  const nv = r.feedback === v ? 0 : v;                   // tapping the same thumb again clears it
+  const res = await api("POST", `/api/jobs/${r.key}/feedback`, { v: nv });
+  r.feedback = nv;
+  if (nv < 0) r.state = "hidden";
+  toast(res.watching ? `Got it. Watching ${res.watching} for new roles.` : nv > 0 ? "Got it, more like this." : nv < 0 ? "Hidden. We'll show fewer like this." : "Rating cleared");
 }
 
 function jobItem(r, actions = true) {
@@ -110,7 +135,7 @@ function jobItem(r, actions = true) {
       <a class="title" href="#/jobs/${r.key}">${r.title}</a>
       <div class="meta">${r.company || "Unknown company"} &middot; ${r.location || "Location n/a"} &middot; ${r.source}${r.date ? ` · ${r.date}` : ""}</div>
       <div class="chips" style="margin-top:6px">
-        ${r.new ? html`<span class="badge acc">New</span>` : ""}
+        ${r.new ? html`<span class="badge acc">New</span>` : ""}${eligBadge(r)}${salaryBadge(r)}
         ${r.state === "shortlisted" ? html`<span class="badge good">Shortlisted</span>` : ""}
         ${r.state === "applied" ? html`<span class="badge good">Applied</span>` : ""}
         ${(flags || "").split(" ").filter(Boolean).map((f) => html`<span class="badge warn">${f}</span>`)}
@@ -118,17 +143,24 @@ function jobItem(r, actions = true) {
       </div>
     </div>
     ${actions ? html`<div class="acts">
-      <button class="btn sm" data-star="${r.key}" title="Shortlist" aria-label="Shortlist">${icon("star")}${r.state === "shortlisted" ? " Saved" : ""}</button>
-      <button class="btn sm" data-hide="${r.key}" title="${r.state === "hidden" ? "Unhide" : "Hide"}" aria-label="Hide">${icon("hide")}</button>
+      ${thumbs(r)}
+      <button class="btn sm" data-star="${r.key}" title="Shortlist" aria-label="${r.state === "shortlisted" ? "Remove from shortlist" : "Shortlist"}" aria-pressed="${r.state === "shortlisted"}">${icon("star")}${r.state === "shortlisted" ? " Saved" : ""}</button>
+      <button class="btn sm" data-hide="${r.key}" title="${r.state === "hidden" ? "Unhide" : "Hide"}" aria-label="${r.state === "hidden" ? "Unhide" : "Hide"} ${r.title}">${icon("hide")}</button>
     </div>` : ""}
   </div>`;
 }
 
 function bindJobActions(el, rows, rerender) {
+  $$("[data-fb]", el).forEach((b) => (b.onclick = async () => {
+    const r = rows.find((x) => x.key === b.dataset.key);
+    await sendFeedback(r, +b.dataset.fb).catch((e) => toast(e.message));
+    rerender();
+  }));
   $$("[data-star]", el).forEach((b) => (b.onclick = async () => {
     const r = rows.find((x) => x.key === b.dataset.star);
     r.state = r.state === "shortlisted" ? "" : "shortlisted";
-    await api("POST", `/api/jobs/${r.key}/state`, { state: r.state }).catch((e) => toast(e.message));
+    const res = await api("POST", `/api/jobs/${r.key}/state`, { state: r.state }).catch((e) => toast(e.message));
+    if (res && res.watching) toast(`Shortlisted. Watching ${res.watching} for new roles.`);
     rerender();
   }));
   $$("[data-hide]", el).forEach((b) => (b.onclick = async () => {
@@ -187,7 +219,7 @@ function shell(path) {
     set(root, html`<div class="app">
       <aside class="side">
         <div class="brand"><img src="/icons/icon-192.png" alt="">jobkit</div>
-        <nav class="nav" id="nav"></nav>
+        <nav class="nav" id="nav" aria-label="Main"></nav>
         <div class="foot">
           <button class="btn sm hidden" id="installBtn">Install app</button>
           <span class="muted small" id="who"></span>
@@ -197,16 +229,16 @@ function shell(path) {
       <div>
         <header class="topbar"><div class="brand"><img src="/icons/icon-192.png" alt="">jobkit</div>
           <a class="btn sm" href="#/settings" aria-label="Notification settings">${icon("bell")}</a></header>
-        <main id="main"></main>
+        <main id="main" tabindex="-1"></main>
       </div>
-      <nav class="tabbar" id="tabbar"></nav>
+      <nav class="tabbar" id="tabbar" aria-label="Quick"></nav>
     </div>`);
     $("#logout").onclick = async (e) => { e.preventDefault(); await api("POST", "/api/auth/logout"); S.me = null; go("#/login"); };
     $("#installBtn").onclick = async () => { if (S.install) { S.install.prompt(); S.install = null; $("#installBtn").classList.add("hidden"); } };
   }
   $("#who").textContent = `Signed in as ${S.me.uid}`;
   if (S.install) $("#installBtn").classList.remove("hidden");
-  set($("#nav"), navItems().map(([h, l, i]) => html`<a href="${h}" class="${isActive(h, path) ? "active" : ""}">${icon(i)}${l}</a>`));
+  set($("#nav"), navItems().map(([h, l, i]) => html`<a href="${h}" class="${isActive(h, path) ? "active" : ""}" ${isActive(h, path) ? raw('aria-current="page"') : ""}>${icon(i)}${l}</a>`));
   const tabs = [["#/", "Home", "home"], ["#/jobs", "Jobs", "search"], ["#/apply", "Apply", "file"], ["#/applications", "Tracker", "list"], ["#/more", "More", "more"]];
   const moreActive = ["#/outreach", "#/profile", "#/settings", "#/admin", "#/more"].some((p) => path.startsWith(p));
   set($("#tabbar"), tabs.map(([h, l, i]) => html`<a href="${h}" class="${(h === "#/more" ? moreActive : isActive(h, path)) ? "active" : ""}">${icon(i)}${l}</a>`));
@@ -250,8 +282,13 @@ async function route() {
     $("#main").append(el);
     set(el, html`<div class="empty"><span class="spinner"></span></div>`);
   }
-  try { await hit[1](el, m, q); } catch (e) { if (e.message !== "Please log in") set(el, html`<div class="notice bad">${e.message}</div>`); }
+  try { await hit[1](el, m, q); } catch (e) { if (e.message !== "Please log in") set(el, html`<div class="notice bad" role="alert">${e.message}</div>`); }
   if (!mode) window.scrollTo(0, 0);
+  // move keyboard / screen-reader focus to the new page's heading
+  const h1 = $("h1", el);
+  if (h1 && S.navigated) { h1.setAttribute("tabindex", "-1"); h1.focus({ preventScroll: true }); }
+  S.navigated = true;
+  document.title = h1 ? `${h1.textContent.trim()} · jobkit` : "jobkit";
 }
 
 // ---------- auth pages ----------
@@ -387,7 +424,14 @@ function profileForm(p, questions = []) {
       ${f("links.Portfolio", "Portfolio / website", L.Portfolio || "")}${f("target_roles", "Target job titles", (p.target_roles || []).join(", "), "text", "comma separated")}
     </div>
     ${f("work_preferences", "Where can you work?", p.work_preferences, "text", "remote worldwide, onsite city, relocation...")}
-    ${f("base_summary", "Professional summary", p.base_summary, "textarea")}`;
+    ${f("base_summary", "Professional summary", p.base_summary, "textarea")}
+    <details style="margin-top:4px"><summary><b>Application form defaults</b> <span class="muted small">used to pre-fill company application forms</span></summary>
+      <div class="grid g2" style="margin-top:10px">
+        ${f("ad.expected_salary", "Expected salary", (p.application_defaults || {}).expected_salary, "text", "e.g. USD 2,500/month or PKR 400k/month")}
+        ${f("ad.notice_period", "Notice period / start date", (p.application_defaults || {}).notice_period, "text", "e.g. 1 month")}
+        ${f("ad.work_authorization", "Work authorisation", (p.application_defaults || {}).work_authorization, "text", "e.g. Pakistani citizen, no sponsorship for remote")}
+        ${f("ad.other", "Anything else forms ask", (p.application_defaults || {}).other, "text", "e.g. open to contract, PKT timezone, 4h US overlap")}
+      </div></details>`;
 }
 
 const SUGGESTABLE = ["target_roles", "headline", "years_experience_text", "work_preferences"];
@@ -416,6 +460,7 @@ function readProfileForm(el, base) {
   $$("[data-pf]", el).forEach((i) => {
     const k = i.dataset.pf, v = i.value.trim();
     if (k.startsWith("links.")) { if (v) p.links[k.slice(6)] = v; else delete p.links[k.slice(6)]; }
+    else if (k.startsWith("ad.")) { p.application_defaults = { ...(p.application_defaults || {}), [k.slice(3)]: v }; }
     else if (k === "target_roles") p.target_roles = splitList(v);
     else p[k] = v;
   });
@@ -423,9 +468,10 @@ function readProfileForm(el, base) {
 }
 
 // ---- structured editor for experience / projects / skills / education ----
-const fieldIn = (f, label, value, ph = "") => html`<div class="field"><label>${label}</label><input type="text" data-f="${f}" value="${value || ""}" placeholder="${ph}"></div>`;
-const bulletsIn = (value, ph) => html`<div class="field"><label>Achievements <span class="muted">(one per line, numbers help)</span></label>
-  <textarea data-f="bullets" placeholder="${ph}">${(value || []).join("\n")}</textarea></div>`;
+let fidN = 0;
+const fieldIn = (f, label, value, ph = "") => { const id = `fi${++fidN}`; return html`<div class="field"><label for="${id}">${label}</label><input id="${id}" type="text" data-f="${f}" value="${value || ""}" placeholder="${ph}"></div>`; };
+const bulletsIn = (value, ph) => { const id = `fi${++fidN}`; return html`<div class="field"><label for="${id}">Achievements <span class="muted">(one per line, numbers help)</span></label>
+  <textarea id="${id}" data-f="bullets" placeholder="${ph}">${(value || []).join("\n")}</textarea></div>`; };
 const delBtn = (what) => html`<button type="button" class="btn sm danger" data-adv-del>Remove ${what}</button>`;
 
 const ADV_ITEMS = {
@@ -614,6 +660,33 @@ async function pageOnboarding(el) {
 }
 
 // ---------- overview ----------
+function nextSteps(o) {
+  const t = o.todo || {}, k = o.kpis;
+  const steps = [
+    !t.notifications && ["#/settings", "!", "Turn on notifications", "so strong matches reach your phone"],
+    o.followups.length && [`#/outreach?app=${o.followups[0].id}&kind=follow_up&auto=1`, o.followups.length,
+      `Send ${o.followups.length > 1 ? "follow-ups" : "a follow-up"}`, "written for you, opens in Gmail"],
+    t.drafts && ["#/applications?status=drafted", t.drafts, `Send ${t.drafts > 1 ? "your drafted applications" : "your drafted application"}`, "CV and letter are ready"],
+    t.strong_unseen && ["#/jobs?view=strong", t.strong_unseen, "Review new strong matches", `${o.threshold}%+ fit`],
+    !t.strong_unseen && k.new && ["#/jobs?view=new", k.new, "Look through new jobs", "rate \u{1F44D}/\u{1F44E} to sharpen matching"],
+    !t.github && ["#/profile?tab=github", "+", "Sync your GitHub", "so CVs can cite your real projects"],
+  ].filter(Boolean).slice(0, 4);
+  if (!steps.length) return "";
+  return html`<div class="card" style="margin-bottom:16px"><h2>Your next steps</h2><div class="todo">${steps.map(([h, n, title, sub]) =>
+    html`<a href="${h}"><span class="n" aria-hidden="true">${n}</span><span><b>${title}</b> <span class="muted small">${sub}</span></span></a>`)}</div></div>`;
+}
+
+function insightsCard(ins) {
+  if (!ins || !ins.sent) return html`<div class="card"><h2>What's working</h2><p class="muted small">After you send a few applications and update their status
+    (interviewing, rejected...), you'll see which sources, CV designs and match scores get you replies.</p></div>`;
+  const table = (title, rows) => rows.length ? html`<h3 style="margin-top:12px">${title}</h3><table><caption class="sr-only">${title}</caption>
+    <tr><th scope="col">Group</th><th scope="col">Sent</th><th scope="col">Interviews</th><th scope="col">Rate</th></tr>
+    ${rows.slice(0, 6).map((r) => html`<tr><td>${r.name}</td><td>${r.sent}</td><td>${r.responses}</td><td><b>${r.rate}%</b></td></tr>`)}</table>` : "";
+  return html`<div class="card"><h2>What's working</h2>
+    <p><b>${ins.rate}%</b> of your ${ins.sent} sent applications led to an interview or offer.</p>
+    ${ins.sent < 5 ? html`<p class="small muted">Send a few more to see clear patterns.</p>` : ""}
+    ${table("By job source", ins.by_source)}${table("By AI match score", ins.by_match)}${table("By CV design", ins.by_theme)}</div>`;
+}
 async function pageOverview(el) {
   const o = await api("GET", "/api/overview");
   const k = o.kpis;
@@ -628,6 +701,7 @@ async function pageOverview(el) {
     ${!ch.web_push_devices && !ch.ntfy && !ch.telegram ? html`<div class="notice">Turn on notifications so you hear about ${o.threshold}%+ matches right away. <a href="#/settings">Set up</a></div>` : ""}
     ${!S.me.ai ? html`<div class="notice warn">AI scoring and tailoring are off because the server has no ANTHROPIC_API_KEY. Jobs are ranked by keywords only.</div>` : ""}
     <div id="live"></div>
+    ${nextSteps(o)}
     <div class="kpis">
       <a class="kpi hi" href="#/jobs?view=strong"><div class="v">${k.strong}</div><div class="l">Strong matches (${o.threshold}%+)</div></a>
       <a class="kpi" href="#/jobs?view=new"><div class="v">${k.new}</div><div class="l">New since last scan</div></a>
@@ -645,13 +719,14 @@ async function pageOverview(el) {
         <div class="card"><h2>Follow-ups due</h2>
           ${o.followups.length ? html`<div class="list">${o.followups.map((a) => html`<div class="item"><div class="body">
               <div class="title">${a.role}</div><div class="meta">${a.company} · applied ${a.applied_on}</div></div>
-              <div class="acts"><a class="btn sm primary" href="#/outreach?app=${a.id}&kind=follow_up">Write follow-up</a></div></div>`)}</div>`
+              <div class="acts"><a class="btn sm primary" href="#/outreach?app=${a.id}&kind=follow_up&auto=1">Write follow-up</a></div></div>`)}</div>`
             : html`<p class="muted small">Nothing due. Applications get a follow-up reminder 7 days after you apply.</p>`}</div>
         <div class="card"><h2>Pipeline</h2>
           ${total ? html`<div class="bar" role="img" aria-label="Applications by status">${Object.entries(o.by_status).filter(([, v]) => v).map(([s, v]) =>
               html`<span style="width:${(v / total) * 100}%;background:${STATUS_COLORS[s]}" title="${s}: ${v}"></span>`)}</div>
             <div class="legend">${Object.entries(o.by_status).filter(([, v]) => v).map(([s, v]) => html`<span><i style="background:${STATUS_COLORS[s]}"></i>${s} ${v}</span>`)}</div>`
             : html`<p class="muted small">No applications yet. Open a job and hit <b>Generate</b>.</p>`}</div>
+        ${insightsCard(o.insights)}
         <div class="card"><h2>Where your matches come from</h2>
           ${src.length ? src.map(([s, v]) => html`<div class="hbar"><span>${s}</span><div class="track"><div class="fill" style="width:${(v / maxSrc) * 100}%"></div></div><span class="n">${v}</span></div>`)
             : html`<p class="muted small">Run a scan to see sources.</p>`}
@@ -685,41 +760,58 @@ async function pageOverview(el) {
 async function pageJobs(el, m, q) {
   const rows = await api("GET", "/api/jobs");
   const thr = S.me.threshold || 90;
-  const f = { text: "", view: q.get("view") || store.get("jobs.view", "all"), source: "", sort: store.get("jobs.sort", "best"), limit: 60 };
+  const f = { text: "", view: q.get("view") || store.get("jobs.view", "all"), source: "", sort: store.get("jobs.sort", "best"), limit: 60,
+              hideClosed: store.get("jobs.hideClosed", true), minSalary: +store.get("jobs.minSalary", 0) || 0 };
   const sources = [...new Set(rows.map((r) => r.source.split("/")[0]))].sort();
-  const views = [["all", "All"], ["strong", `${thr}%+`], ["new", "New"], ["shortlisted", "Shortlisted"], ["scored", "AI-scored"], ["hidden", "Hidden"]];
+  const views = [["all", "All"], ["strong", `${thr}%+`], ["new", "New"], ["open", "Open to me"], ["salary", "Shows salary"],
+                 ["shortlisted", "Shortlisted"], ["liked", "\u{1F44D} Liked"], ["scored", "AI-scored"], ["hidden", "Hidden"]];
   set(el, html`
-    <div class="page-head"><div><h1>Jobs</h1><div class="muted small">${rows.length} jobs matched your keywords. Open one to see the AI fit and generate your application.</div></div>
+    <div class="page-head"><div><h1>Jobs</h1><div class="muted small">${rows.length} jobs matched your keywords. Rate jobs \u{1F44D}/\u{1F44E} and your matches get sharper.</div></div>
       <a class="btn" href="#/apply">Tailor for a job not listed</a></div>
-    <div class="card" style="margin-bottom:16px">
+    <div class="card" style="margin-bottom:16px" role="search" aria-label="Filter jobs">
       <div class="grid g3" style="align-items:end">
         <div><label for="t">Search</label><input id="t" type="search" placeholder="title, company, skill, location"></div>
         <div><label for="src">Source</label><select id="src"><option value="">All sources</option>${sources.map((s) => html`<option>${s}</option>`)}</select></div>
         <div><label for="sort">Sort</label><select id="sort">
-          <option value="best">Best match</option><option value="new">Newest</option><option value="kw">Keyword score</option></select></div>
+          <option value="best">Best match</option><option value="new">Newest</option><option value="salary">Highest salary</option><option value="kw">Keyword score</option></select></div>
       </div>
-      <div class="chips" style="margin-top:12px" id="views">${views.map(([v, l]) => html`<button class="chip" data-v="${v}">${l}</button>`)}</div>
+      <div class="grid g2" style="align-items:end;margin-top:12px">
+        <div><label for="minsal">Minimum salary <span class="muted">(USD per year, approx.; jobs that list a salary)</span></label>
+          <input id="minsal" type="number" min="0" step="5000" inputmode="numeric" placeholder="e.g. 30000" value="${f.minSalary || ""}"></div>
+        <label class="switch"><input type="checkbox" id="hideclosed" ${f.hideClosed ? "checked" : ""}> Hide jobs I can't apply to (AI checked location / visa rules)</label>
+      </div>
+      <div class="chips" style="margin-top:12px" id="views" role="group" aria-label="Show">${views.map(([v, l]) => html`<button class="chip" data-v="${v}" aria-pressed="false">${l}</button>`)}</div>
     </div>
+    <p class="sr-only" id="count" aria-live="polite"></p>
     <div class="card"><div class="list" id="list"></div><div class="row" style="justify-content:center;margin-top:10px"><button class="btn hidden" id="more">Show more</button></div></div>`);
   $("#sort", el).value = f.sort;
-  const best = (r) => (r.ai_match != null ? 1000 + r.ai_match : r.score);
+  const best = (r) => (r.ai_match != null ? 1000 + r.ai_match - (r.eligible === "no" ? 500 : 0) : r.score);
   const draw = () => {
-    $$("#views .chip", el).forEach((c) => c.classList.toggle("on", c.dataset.v === f.view));
+    $$("#views .chip", el).forEach((c) => { c.classList.toggle("on", c.dataset.v === f.view); c.setAttribute("aria-pressed", c.dataset.v === f.view); });
     const t = f.text.toLowerCase();
     const list = rows.filter((r) => (f.view === "hidden" ? r.state === "hidden" : r.state !== "hidden"))
+      .filter((r) => !f.hideClosed || f.view === "hidden" || r.eligible !== "no")
       .filter((r) => f.view !== "strong" || (r.ai_match ?? 0) >= thr)
       .filter((r) => f.view !== "new" || r.new)
+      .filter((r) => f.view !== "open" || r.eligible === "yes")
+      .filter((r) => f.view !== "salary" || r.salary_usd > 0)
       .filter((r) => f.view !== "shortlisted" || r.state === "shortlisted")
+      .filter((r) => f.view !== "liked" || r.feedback > 0)
       .filter((r) => f.view !== "scored" || r.ai_match != null)
+      .filter((r) => !f.minSalary || (r.salary_usd || 0) >= f.minSalary)
       .filter((r) => !f.source || r.source.startsWith(f.source))
-      .filter((r) => !t || `${r.title} ${r.company} ${r.location} ${r.why}`.toLowerCase().includes(t));
-    list.sort(f.sort === "new" ? (a, b) => (b.date || "").localeCompare(a.date || "") : f.sort === "kw" ? (a, b) => b.score - a.score : (a, b) => best(b) - best(a));
+      .filter((r) => !t || `${r.title} ${r.company} ${r.location} ${r.why} ${r.salary || ""}`.toLowerCase().includes(t));
+    list.sort(f.sort === "new" ? (a, b) => (b.date || "").localeCompare(a.date || "") : f.sort === "kw" ? (a, b) => b.score - a.score
+      : f.sort === "salary" ? (a, b) => (b.salary_usd || 0) - (a.salary_usd || 0) : (a, b) => best(b) - best(a));
     set($("#list", el), list.length ? list.slice(0, f.limit).map((r) => jobItem(r)) : html`<div class="empty">No jobs here. Try another filter${rows.length ? "" : ", or run a scan from Overview"}.</div>`);
+    $("#count", el).textContent = `${list.length} jobs shown`;
     $("#more", el).classList.toggle("hidden", list.length <= f.limit);
     bindJobActions(el, rows, draw);
   };
   $("#t", el).oninput = (e) => { f.text = e.target.value; f.limit = 60; draw(); };
   $("#src", el).onchange = (e) => { f.source = e.target.value; draw(); };
+  $("#minsal", el).onchange = (e) => { f.minSalary = +e.target.value || 0; store.set("jobs.minSalary", f.minSalary); draw(); };
+  $("#hideclosed", el).onchange = (e) => { f.hideClosed = e.target.checked; store.set("jobs.hideClosed", f.hideClosed); draw(); };
   $("#sort", el).onchange = (e) => { f.sort = e.target.value; store.set("jobs.sort", f.sort); draw(); };
   $$("#views .chip", el).forEach((c) => (c.onclick = () => { f.view = c.dataset.v; store.set("jobs.view", f.view); f.limit = 60; draw(); }));
   $("#more", el).onclick = () => { f.limit += 60; draw(); };
@@ -736,9 +828,11 @@ async function pageJob(el, m) {
       <div class="item" style="padding:0">${scoreBox(j)}
         <div class="body"><h1>${j.title}</h1>
           <div class="muted">${j.company || "Unknown company"} &middot; ${j.location || "Location n/a"} &middot; ${j.source}${j.date ? ` · posted ${j.date}` : ""}</div>
-          <div class="chips" style="margin-top:8px">${j.new ? html`<span class="badge acc">New</span>` : ""}
+          <div class="chips" style="margin-top:8px">${j.new ? html`<span class="badge acc">New</span>` : ""}${eligBadge(j)}${salaryBadge(j)}
             ${(flags || "").split(" ").filter(Boolean).map((x) => html`<span class="badge warn">${x}</span>`)}
-            ${j.state ? html`<span class="badge good">${j.state}</span>` : ""}</div></div></div>
+            ${j.state ? html`<span class="badge good">${j.state}</span>` : ""}</div></div>
+        <div class="acts">${thumbs(j)}</div></div>
+      ${j.eligible === "no" ? html`<div class="notice bad" style="margin:14px 0 0" role="note"><b>You probably can't take this job:</b> ${j.eligibility || "location or work-authorisation rules"}. Check the posting before spending time on it.</div>` : ""}
       <div class="row" style="margin-top:16px">
         ${themeSelect("theme", S.me.cv_theme)}
         <button class="btn primary" id="apply" data-busy="Tailoring your CV, letter and emails (about 40s)...">${icon("file")} Generate CV + cover letter + emails</button>
@@ -762,10 +856,17 @@ async function pageJob(el, m) {
     const sc = $("#score", el);
     if (sc) sc.onclick = (e) => busy(e.currentTarget, async () => {
       const r = await api("POST", `/api/jobs/${j.key}/score`);
-      Object.assign(j, { ai_match: r.match, ai_verdict: r.verdict, ai_strengths: r.strengths, ai_gaps: r.gaps });
+      Object.assign(j, { ai_match: r.match, ai_verdict: r.verdict, ai_strengths: r.strengths, ai_gaps: r.gaps,
+                         eligible: r.eligible, eligibility: r.eligibility });
       draw();
     });
-    $("#star", el).onclick = async () => { j.state = j.state === "shortlisted" ? "" : "shortlisted"; await api("POST", `/api/jobs/${j.key}/state`, { state: j.state }); draw(); };
+    $$("[data-fb]", el).forEach((b) => (b.onclick = async () => { await sendFeedback(j, +b.dataset.fb).catch((e) => toast(e.message)); draw(); }));
+    $("#star", el).onclick = async () => {
+      j.state = j.state === "shortlisted" ? "" : "shortlisted";
+      const res = await api("POST", `/api/jobs/${j.key}/state`, { state: j.state });
+      if (res.watching) toast(`Shortlisted. Watching ${res.watching} for new roles.`);
+      draw();
+    };
     $("#hide", el).onclick = async () => { j.state = j.state === "hidden" ? "" : "hidden"; await api("POST", `/api/jobs/${j.key}/state`, { state: j.state }); draw(); };
   };
   draw();
@@ -802,11 +903,11 @@ async function pageApply(el) {
   });
 }
 
-async function pagePackage(el, m) {
+async function pagePackage(el, m, q) {
   const name = decodeURIComponent(m[1]);
   const [pkg, apps] = await Promise.all([api("GET", `/api/packages/${encodeURIComponent(name)}`), api("GET", "/api/applications"), loadThemes()]);
   const app = apps.rows.find((a) => a.folder === name);
-  let c = pkg.tailored, tab = "cv", bust = Date.now();
+  let c = pkg.tailored, tab = q.get("tab") || "cv", bust = Date.now();
   const file = (f, dl) => `/api/packages/${encodeURIComponent(name)}/files/${f}?t=${bust}${dl ? "&download=1" : ""}`;
   const rebuild = async (edits, theme) => {
     const r = await api("POST", `/api/packages/${encodeURIComponent(name)}/render`, { edits, theme });
@@ -850,7 +951,29 @@ async function pagePackage(el, m) {
           <button class="btn" id="saveem" data-busy="Saving...">Save edits</button></div>
         <div id="sent"></div>`;
     }
-    if (tab === "outreach") return html`<p class="muted small">Recruiter and referral messages for this application. Find the recruiter on LinkedIn by searching "${c.company} recruiter" or "talent acquisition", and the hiring manager with "engineering manager ${c.company}".</p>
+    if (tab === "answers") return pkg.answers ? html`<div class="spread"><p class="muted small" style="margin:0">Paste these into the company's application form. Replace anything in [brackets].</p>
+          <button class="btn sm" id="genans" data-busy="Rewriting...">Regenerate</button></div>
+        <div style="margin-top:10px">${pkg.answers.map((x, i) => html`<div class="qa"><div class="q">${x.q}</div><div class="a" id="qa${i}">${x.a}</div>
+          <button class="btn sm" data-copyqa="${i}" style="margin-top:6px">Copy answer</button></div>`)}</div>`
+      : html`<h3>Application form answers</h3><p class="muted">Most companies make you fill a form ("Why us?", expected salary, notice period, years with X...).
+          jobkit writes answers from your real experience, including any questions this posting asks.</p>
+        <p class="small muted">Tip: set your expected salary and notice period once in <a href="#/profile">Profile</a> so they're filled in automatically.</p>
+        <button class="btn primary" id="genans" data-busy="Writing answers (about 30s)...">Write my form answers</button>`;
+    if (tab === "interview") {
+      const iv = pkg.interview;
+      if (!iv) return html`<h3>Interview prep</h3><p class="muted">Got an interview? Get a company brief, the 10 questions you'll most likely be asked
+          (with answers built from your own projects), smart questions to ask them, and the gaps they may probe.</p>
+        <button class="btn primary" id="genprep" data-busy="Preparing (about 40s)...">Prepare me for this interview</button>`;
+      return html`<div class="spread"><h3 style="margin:0">About ${c.company}</h3><button class="btn sm" id="genprep" data-busy="Rewriting...">Regenerate</button></div>
+        <p>${iv.company_brief}</p>
+        <h3>What they'll probably test</h3><div class="chips">${(iv.focus || []).map((x) => html`<span class="badge acc">${x}</span>`)}</div>
+        <h3 style="margin-top:16px">Likely questions <span class="muted small">(tap to see how to answer)</span></h3>
+        ${(iv.questions || []).map((x) => html`<details class="qa"><summary class="q">${x.q} <span class="badge">${x.type}</span></summary><div class="a" style="margin-top:6px">${x.answer}</div></details>`)}
+        <div class="grid g2" style="margin-top:12px">
+          <div><h3>Questions to ask them</h3><ul>${(iv.ask_them || []).map((x) => html`<li>${x}</li>`)}</ul></div>
+          <div><h3>Be ready for</h3><ul>${(iv.watch_out || []).map((x) => html`<li>${x}</li>`)}</ul></div></div>`;
+    }
+    if (tab === "outreach") return html`${peopleLinks(c.company)}
       <div class="grid g2"><div class="field"><label>Recipient name <span class="muted">(optional)</span></label><input id="rcp" type="text" value="${app?.contact || ""}"></div>
         <div class="field"><label>Anything to mention? <span class="muted">(optional)</span></label><input id="nts" type="text"></div></div>
       <div class="row">${Object.entries(KINDS).map(([k, l]) => html`<button class="btn sm" data-kind="${k}" data-busy="Writing...">${l}</button>`)}</div>
@@ -865,15 +988,25 @@ async function pagePackage(el, m) {
           <select id="status" style="width:auto">${apps.statuses.map((s) => html`<option ${s === app.status ? "selected" : ""}>${s}</option>`)}</select></div>` : ""}</div>
       ${c.gaps?.length ? html`<div class="notice warn"><b>Check before sending:</b><ul style="margin:6px 0 0">${c.gaps.map((g) => html`<li>${g}</li>`)}</ul></div>` : ""}
       ${c.keywords_matched?.length ? html`<div class="chips" style="margin-bottom:16px">${c.keywords_matched.map((k) => html`<span class="badge acc">${k}</span>`)}</div>` : ""}
-      <div class="card"><div class="tabs">${[["cv", "CV"], ["letter", "Cover letter"], ["email", "Application email"], ["outreach", "Recruiter outreach"], ["jd", "Job description"]].map(([t, l]) =>
-        html`<button class="${t === tab ? "on" : ""}" data-tab="${t}">${l}</button>`)}</div>${body()}</div>`);
+      <div class="card"><div class="tabs" role="tablist" aria-label="Application package">${[["cv", "CV"], ["letter", "Cover letter"], ["email", "Email"],
+        ["answers", "Form answers"], ["outreach", "Contact people"], ["interview", "Interview prep"], ["jd", "Job post"]].map(([t, l]) =>
+        html`<button role="tab" aria-selected="${t === tab}" class="${t === tab ? "on" : ""}" data-tab="${t}">${l}</button>`)}</div><div role="tabpanel">${body()}</div></div>`);
     bind();
   }
 
   function bind() {
     $$("[data-tab]", el).forEach((b) => (b.onclick = () => { tab = b.dataset.tab; draw(); }));
     const st = $("#status", el);
-    if (st) st.onchange = async () => { Object.assign(app, await api("PATCH", `/api/applications/${app.id}`, { status: st.value })); toast(`Marked ${st.value}`); };
+    if (st) st.onchange = async () => {
+      Object.assign(app, await api("PATCH", `/api/applications/${app.id}`, { status: st.value }));
+      if (st.value === "interviewing") { toast("Interview! Your prep pack is in the Interview prep tab."); tab = "interview"; draw(); }
+      else toast(`Marked ${st.value}`);
+    };
+    const ga = $("#genans", el);
+    if (ga) ga.onclick = () => busy(ga, async () => { pkg.answers = (await api("POST", `/api/packages/${encodeURIComponent(name)}/answers`)).answers; draw(); });
+    const gp = $("#genprep", el);
+    if (gp) gp.onclick = () => busy(gp, async () => { pkg.interview = (await api("POST", `/api/packages/${encodeURIComponent(name)}/interview`)).interview; draw(); });
+    $$("[data-copyqa]", el).forEach((b) => (b.onclick = () => copy($(`#qa${b.dataset.copyqa}`, el).textContent)));
     $$("[data-theme]", el).forEach((b) => (b.onclick = () => busy(b, () => rebuild({}, b.dataset.theme))));
     const sv = $("#savecv", el);
     if (sv) sv.onclick = () => busy(sv, () => {
@@ -917,6 +1050,21 @@ async function pagePackage(el, m) {
   draw();
 }
 
+// One-tap LinkedIn people searches for an application: recruiters, hiring managers, alumni for referrals
+function peopleLinks(company) {
+  if (!company || company === "Unknown") return "";
+  const li = (k) => `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(k)}`;
+  const school = S.me?.school;
+  const links = [[li(`${company} recruiter`), `Recruiters at ${company}`, "Message one right after you apply"],
+    [li(`${company} talent acquisition`), "Talent acquisition team", "Often the person screening CVs"],
+    [li(`${company} engineering manager`), "Engineering / hiring managers", "Short cold email: why you, for this team"],
+    ...(school ? [[li(`${company} ${school}`), `${school} alumni at ${company}`, "Best for a referral: you share a school"]] : []),
+    [li(`${company} software engineer`), `Engineers at ${company}`, "Ask for a referral or a quick chat"]];
+  return html`<h3>Find the right people</h3><div class="people grid g2">${links.map(([u, t, d]) =>
+    html`<a href="${u}" target="_blank" rel="noopener noreferrer"><b>${t}</b> ${icon("ext")}<br><span class="small muted">${d}</span></a>`)}</div>
+    <h3 style="margin-top:12px">Write a message</h3>`;
+}
+
 // Gmail compose with everything pre-filled (files can't be attached through a link)
 function openGmail(to, subject, body) {
   const q = new URLSearchParams({ view: "cm", fs: "1", to: to || "", su: subject || "", body: body || "" });
@@ -926,7 +1074,7 @@ function openMailto(to, subject, body) {
   location.href = `mailto:${encodeURIComponent(to || "")}?subject=${encodeURIComponent(subject || "")}&body=${encodeURIComponent(body || "")}`;
 }
 
-function showMessage(box, kind, r, to = "") {
+function showMessage(box, kind, r, to = "", onOpen = null) {
   const isEmail = !!r.subject;
   set(box, html`<div class="card" style="background:var(--panel-2)">
     <div class="spread"><h3>${KINDS[kind]}</h3><span class="small muted" id="mlen">${r.body.length} characters${kind === "linkedin_note" ? " / 300" : ""}</span></div>
@@ -940,8 +1088,8 @@ function showMessage(box, kind, r, to = "") {
   $("#mcb", box).onclick = () => copy($("#mbody", box).value);
   if (isEmail) {
     const vals = () => [$("#mto", box).value, $("#msubj", box).value, $("#mbody", box).value];
-    $("#mgmail", box).onclick = () => openGmail(...vals());
-    $("#mmail", box).onclick = () => openMailto(...vals());
+    $("#mgmail", box).onclick = () => { openGmail(...vals()); onOpen?.(); };
+    $("#mmail", box).onclick = () => { openMailto(...vals()); onOpen?.(); };
   }
 }
 
@@ -1002,7 +1150,7 @@ async function pageOutreach(el, m, q) {
       <div class="field"><label for="nt">Anything to mention? <span class="muted">(optional)</span></label><input id="nt" type="text" placeholder="e.g. met them at a meetup, liked their talk on..."></div>
       <details><summary class="small">Paste the job description (optional)</summary><textarea id="jd" style="margin-top:8px"></textarea></details>
       <button class="btn primary" id="go" style="margin-top:12px" data-busy="Writing...">${icon("mail")} Write message</button>
-      <div id="out" style="margin-top:16px"></div>
+      <div id="out" style="margin-top:16px"></div><div id="sentbox"></div>
     </div>
     <div class="card"><h2>Playbook</h2><ol class="small">
       <li><b>Apply first</b>, then message within 24 hours. Mention that you applied.</li>
@@ -1020,8 +1168,23 @@ async function pageOutreach(el, m, q) {
     const kind = $("#kind", el).value;
     const r = await api("POST", "/api/outreach", { kind, app_id: appSel.value || null, company: $("#co", el).value, role: $("#ro", el).value,
       recipient: $("#rc", el).value, notes: $("#nt", el).value, jd: $("#jd", el).value });
-    showMessage($("#out", el), kind, r, rows.find((x) => x.id === appSel.value)?.contact_email);
+    const app = rows.find((x) => x.id === appSel.value);
+    showMessage($("#out", el), kind, r, app?.contact_email, () => {
+      if (!app || !["follow_up", "thank_you"].includes(kind)) return;
+      const box = $("#sentbox", el);
+      set(box, html`<div class="notice" style="margin-top:12px">Sent it? <button class="btn sm primary" id="marksent">${kind === "follow_up" ? "Mark follow-up sent" : "Done"}</button>
+        <span class="small muted">${kind === "follow_up" ? "We'll remind you again in 7 days if there's still no reply." : ""}</span></div>`);
+      $("#marksent", el).onclick = async () => {
+        if (kind === "follow_up") {
+          const next = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
+          await api("PATCH", `/api/applications/${app.id}`, { status: "follow-up sent", follow_up: next });
+          toast("Marked. Next reminder in 7 days.");
+        }
+        set(box, "");
+      };
+    });
   });
+  if (q.get("auto") && q.get("app")) $("#go", el).click();   // opened from a follow-up notification: write it straight away
 }
 
 // ---------- profile + CV designs + GitHub ----------
@@ -1108,7 +1271,8 @@ async function pageSettings(el) {
   set(el, html`<div class="page-head"><div><h1>Settings</h1></div><button class="btn primary" id="save" data-busy="Saving...">Save settings</button></div>
     <div class="card"><h2>Notifications</h2>
       <p class="small">You get a notification when a job scores <b id="thrv">${c.alert_threshold}</b>% or higher, plus a daily nudge when follow-ups are due.</p>
-      <input type="range" id="thr" min="50" max="100" step="1" value="${c.alert_threshold}" aria-label="Alert threshold">
+      <input type="range" id="thr" min="50" max="100" step="1" value="${c.alert_threshold}" aria-label="Alert threshold in percent" aria-valuetext="${c.alert_threshold} percent">
+      <label class="switch" style="margin-top:10px"><input type="checkbox" id="digest" ${c.daily_digest ? "checked" : ""}> Morning digest: the day's 5 best jobs at about 9 am (Pakistan time)</label>
       <div class="chips" style="margin:12px 0"><span class="badge ${ch.web_push_devices ? "good" : ""}">Push devices: ${ch.web_push_devices}</span>
         <span class="badge ${ch.ntfy ? "good" : ""}">ntfy: ${ch.ntfy ? "on" : "off"}</span><span class="badge ${ch.telegram ? "good" : ""}">Telegram: ${ch.telegram ? "on" : "off"}</span></div>
       <div class="row"><button class="btn primary" id="push" data-busy="Enabling...">${icon("bell")} Enable push on this device</button><button class="btn" id="test" data-busy="Sending...">Send a test notification</button></div>
@@ -1123,6 +1287,7 @@ async function pageSettings(el) {
     <div class="card"><div class="spread"><h2>Job search</h2><button class="btn sm" id="rebuild" data-busy="Rebuilding...">Rebuild from my profile</button></div>
       <div class="grid g2">${list("search_terms", "Search terms", "what the job boards are searched for")}${list("title_keywords", "Title must contain one of")}</div>
       ${list("skills", "Skills to look for in descriptions")}
+      ${list("watch_companies", "Watched companies", "new roles here get a boost and an alert; added automatically when you \u{1F44D}, shortlist or apply")}
       <div class="grid g2">${list("open_locations", "Locations you can work from")}${list("closed_locations", "Location phrases that rule a job out")}</div>
       <div class="grid g2">${list("too_senior", "Seniority words that lower the score")}${list("bad_title", "Title words to skip")}</div>
       <div class="grid g3">${num("min_score", "Min keyword score to keep", 0, 100)}${num("max_age_days", "Max job age (days)", 1, 120)}${num("ai_prefilter_score", "Keyword score needed for AI scoring", 0, 100)}</div>
@@ -1148,7 +1313,8 @@ async function pageSettings(el) {
     toast("Search keywords rebuilt from your profile"); route();
   });
   $("#save", el).onclick = (e) => busy(e.currentTarget, async () => {
-    const cfg = { alert_threshold: +$("#thr", el).value, ntfy_topic: $("#ntfy", el).value.trim(), telegram_chat_id: $("#tg", el).value.trim(),
+    const cfg = { alert_threshold: +$("#thr", el).value, daily_digest: $("#digest", el).checked,
+      ntfy_topic: $("#ntfy", el).value.trim(), telegram_chat_id: $("#tg", el).value.trim(),
       sources: Object.fromEntries($$("[data-src]", el).map((i) => [i.dataset.src, i.checked])),
       linkedin: { ...c.linkedin, locations: splitList($("#li", el).value) }, jobspy: { ...c.jobspy, locations: splitList($("#jsl", el).value) },
       adzuna_countries: splitList($("#adz", el).value), jsearch_queries: splitList($("#jsq", el).value),

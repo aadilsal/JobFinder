@@ -15,7 +15,28 @@
   }
 }
 * { box-sizing: border-box; }
-html, body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 var(--font); -webkit-text-size-adjust: 100%; }
+/* accessibility */
+.skip { position: absolute; left: 8px; top: -60px; z-index: 100; background: var(--accent); color: var(--accent-text); padding: 10px 14px; border-radius: 8px; font-weight: 600; }
+.skip:focus { top: 8px; text-decoration: none; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+h1:focus { outline: none; }
+@media (pointer: coarse) { .btn, .chip, .tabs button { min-height: 44px; } .btn.sm { min-height: 40px; } .chip { padding: 6px 12px; } }
+@media (prefers-contrast: more) { :root { --muted: #334155; --border: #94a3b8; } }
+html, body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.55 var(--font); -webkit-text-size-adjust: 100%; }
+.thumbs { display: inline-flex; gap: 4px; }
+.thumbs .btn.on-up { background: var(--good-weak); color: var(--good); border-color: transparent; }
+.thumbs .btn.on-down { background: var(--bad-weak); color: var(--bad); border-color: transparent; }
+.todo { display: flex; flex-direction: column; gap: 8px; }
+.todo a { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); }
+.todo a:hover { border-color: var(--accent); text-decoration: none; }
+.todo .n { min-width: 28px; height: 28px; border-radius: 999px; display: grid; place-items: center; background: var(--accent); color: var(--accent-text); font-weight: 700; font-size: .85rem; }
+.qa { border-top: 1px solid var(--border); padding: 12px 0; }
+.qa:first-child { border-top: 0; }
+.qa .q { font-weight: 600; margin-bottom: 4px; }
+.qa .a { white-space: pre-wrap; }
+.people a { display: block; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; color: var(--text); background: var(--panel-2); }
+.people a:hover { border-color: var(--accent); text-decoration: none; }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 h1 { font-size: 1.5rem; margin: 0 0 .25rem; letter-spacing: -.01em; }

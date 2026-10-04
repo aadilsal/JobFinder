@@ -84,7 +84,8 @@ def apply(uid, jd, company="", job=None, theme=None, log=print):
     emails = extract_emails(jd)
     row = tracker.add(uid, company=c.get("company") or company, role=c["role"], match=c["match_score"],
                       folder=p.name, job_url=(job or {}).get("url", ""), job_key=(job or {}).get("key", ""),
-                      contact_email=emails[0] if emails else "")
+                      contact_email=emails[0] if emails else "",
+                      source=((job or {}).get("source") or "pasted").split("/")[0], theme=theme)
     if job:
         scraper.set_state(uid, job["key"], "applied")
     return p.name, c, row
@@ -95,7 +96,20 @@ def load_package(uid, name):
     c = json.loads((p / "tailored.json").read_text(encoding="utf-8"))
     jd = (p / "jd.txt").read_text(encoding="utf-8") if (p / "jd.txt").exists() else ""
     files = sorted(f.name for f in p.iterdir() if f.is_file())
-    return {"folder": name, "tailored": c, "jd": jd, "files": files, "emails": extract_emails(jd)}
+    extra = {k: json.loads((p / f"{k}.json").read_text(encoding="utf-8"))
+             for k in ("answers", "interview") if (p / f"{k}.json").exists()}
+    return {"folder": name, "tailored": c, "jd": jd, "files": files, "emails": extract_emails(jd), **extra}
+
+
+def save_extra(uid, name, kind, data):
+    """Store generated form answers / interview prep next to the application."""
+    (folder(uid, name) / f"{kind}.json").write_text(json.dumps(data, indent=1), encoding="utf-8")
+
+
+def download_name(profile, fname):
+    """What recruiters see: 'Aadil Salman Butt CV.pdf', 'Aadil Salman Butt Cover Letter.pdf'."""
+    person = re.sub(r"[^\w .'-]", "", profile.get("name") or "").strip() or "Candidate"
+    return {"CV.pdf": f"{person} CV.pdf", "Cover_Letter.pdf": f"{person} Cover Letter.pdf"}.get(fname, fname)
 
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,24}")

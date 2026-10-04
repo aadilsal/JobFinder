@@ -8,7 +8,7 @@ import json, os, threading, time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 
-import auth, config, generator, notify, scraper, tracker
+import auth, config, generator, notify, prefs, scraper, tracker
 
 STATUS = {"running": False, "log": [], "started": None, "finished": None, "error": None, "next_run": None}
 _lock = threading.Lock()
@@ -35,14 +35,15 @@ def attach_ai(uid, rows):
     for r in rows:
         if a := ai.get(r["key"]):
             r.update(ai_match=a["match"], ai_verdict=a.get("verdict", ""), ai_strengths=a.get("strengths", []),
-                     ai_gaps=a.get("gaps", []))
+                     ai_gaps=a.get("gaps", []), eligible=a.get("eligible", "unclear"),
+                     eligibility=a.get("eligibility", ""))
     return rows
 
 
 def score_one(uid, job):
     """AI-score a single job on demand (from the job detail view)."""
     profile, _ = generator.load_inputs(uid)
-    res = generator.match_job(job, profile)
+    res = generator.match_job(job, profile, prefs.summary(uid))
     ai = load_ai(uid)
     ai[job["key"]] = {**res, "at": date.today().isoformat()}
     _write(_ai_file(uid), ai)
@@ -61,10 +62,11 @@ def score_new(uid, rows, cfg, log=print):
         return
     log(f"[{uid}] AI-scoring {len(todo)} jobs...")
     profile, _ = generator.load_inputs(uid)
+    liked = prefs.summary(uid)
 
     def one(r):
         try:
-            return r["key"], generator.match_job(r, profile)
+            return r["key"], generator.match_job(r, profile, liked)
         except Exception as e:
             log(f"  ! AI score failed for {r['title'][:40]}: {e}")
             return r["key"], None
@@ -89,8 +91,18 @@ def alert(uid, rows, cfg, log=print):
     done = set(state["jobs"])
     limit = cfg["alert_threshold"] if os.getenv("ANTHROPIC_API_KEY") else cfg["heuristic_alert_score"]
     hidden = {k for k, v in scraper.load_state(uid).items() if v == "hidden"}
-    hits = sorted([r for r in rows if r["key"] not in done and r["key"] not in hidden and match_of(r) >= limit],
-                  key=match_of, reverse=True)
+    rows = [r for r in rows if r["key"] not in hidden and r.get("eligible") != "no"]   # never alert on jobs you can't take
+    hits = sorted([r for r in rows if r["key"] not in done and match_of(r) >= limit], key=match_of, reverse=True)
+
+    # new roles at companies you liked / shortlisted (even below the threshold)
+    watched = {c.lower() for c in cfg.get("watch_companies", [])}
+    hit_keys = {r["key"] for r in hits}
+    for r in [r for r in rows if r["new"] and r["key"] not in done and r["key"] not in hit_keys
+              and (r.get("company") or "").lower() in watched][:3]:
+        notify.send(uid, f"New role at {r['company']}", f"{r['title']} - {r['location'] or 'location n/a'}",
+                    path=f"/#/jobs/{r['key']}", tag=r["key"])
+        hits.append(r)
+        log(f"[{uid}] watched-company alert: {r['title']} @ {r['company']}")
     for r in hits[:5]:
         res = notify.send(uid, f"{match_of(r)}% match: {r['title']}",
                           f"{r['company']} - {r['location'] or 'location n/a'}\n{r.get('ai_verdict') or r['why']}",
@@ -105,9 +117,25 @@ def alert(uid, rows, cfg, log=print):
     today = date.today().isoformat()
     due = tracker.due_followups(uid)
     if due and state.get("followup_day") != today:
+        # one due -> the notification opens a ready-written follow-up; several -> the applications list
+        path = f"/#/outreach?app={due[0]['id']}&kind=follow_up&auto=1" if len(due) == 1 else "/#/applications?status=applied"
         notify.send(uid, f"{len(due)} follow-up{'s' if len(due) > 1 else ''} due today",
-                    ", ".join(f"{r['role']} @ {r['company']}" for r in due[:4]), path="/#/applications")
+                    ", ".join(f"{r['role']} @ {r['company']}" for r in due[:4]), path=path)
         state["followup_day"] = today
+
+    # morning digest: the day's best jobs you haven't been told about, including good 70-89% ones
+    if cfg.get("daily_digest") and datetime.utcnow().hour >= cfg.get("digest_hour_utc", 4) \
+            and state.get("digest_day") != today:
+        sent = set(state.get("digested", []))
+        best = sorted([r for r in rows if r["key"] not in sent and (match_of(r) >= 60 or r["score"] >= 60)],
+                      key=lambda r: (match_of(r), r["score"]), reverse=True)[:5]
+        if best:
+            notify.send(uid, f"Today's top {len(best)} job{'s' if len(best) > 1 else ''} for you",
+                        "\n".join(f"{match_of(r) or r['score']}% {r['title']} @ {r['company']}" for r in best),
+                        path="/#/jobs?view=new", tag="digest")
+            state["digested"] = sorted(sent | {r["key"] for r in best})[-500:]
+            state["digest_day"] = today        # only once something was sent; otherwise retry next scan
+            log(f"[{uid}] daily digest sent ({len(best)} jobs)")
     _write(nf, state)
     return hits
 

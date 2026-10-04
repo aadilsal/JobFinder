@@ -139,11 +139,35 @@ def logout(response: Response):
 @app.get("/api/me")
 def me(uid=Depends(user)):
     has, cfg = config.profile_path(uid).exists(), config.load(uid)
-    questions = generator.profile_gaps(generator.load_inputs(uid)[0]) if has else []
+    prof = generator.load_inputs(uid)[0] if has else {}
+    questions = generator.profile_gaps(prof) if has else []
     return {"uid": uid, "admin": auth.is_admin(uid), "has_profile": has,
             "onboarded": has and not any(q["required"] for q in questions),
             "ai": bool(os.getenv("ANTHROPIC_API_KEY")), "channels": notify.channels(uid),
-            "threshold": cfg["alert_threshold"], "cv_theme": cfg["cv_theme"]}
+            "threshold": cfg["alert_threshold"], "cv_theme": cfg["cv_theme"], "name": prof.get("name", ""),
+            "school": ((prof.get("education") or [{}])[0].get("school") or "").split(",")[0]}
+
+
+def _disposition(kind, filename):
+    """Content-Disposition with a readable name ('Aadil Salman Butt CV.pdf'), safe for any characters."""
+    from urllib.parse import quote
+    ascii_name = filename.encode("ascii", "ignore").decode() or "file.pdf"
+    return f'{kind}; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(filename)}'
+
+
+def _watch(uid, job):
+    """You showed interest in a company: watch its whole job board and boost/alert its new roles."""
+    cfg, changed = config.load(uid), False
+    co = (job.get("company") or "").strip()
+    if co and co.lower() not in [c.lower() for c in cfg["watch_companies"]]:
+        cfg["watch_companies"].append(co)
+        changed = True
+    if (ats := scraper.detect_ats(job.get("url"))) and ats[1] not in cfg["ats_companies"].setdefault(ats[0], []):
+        cfg["ats_companies"][ats[0]].append(ats[1])
+        changed = True
+    if changed:
+        config.save(uid, cfg)
+    return co if changed else ""
 
 
 # ---- onboarding + profile --------------------------------------------------
@@ -217,15 +241,18 @@ def themes(uid=Depends(user)):
 def cv_base(theme: str, uid=Depends(user)):
     if theme not in render.THEMES:
         _err("Unknown theme", 404)
+    name = applier.download_name(generator.load_inputs(uid)[0], "CV.pdf")
     return FileResponse(applier.base_cv(uid, theme), media_type="application/pdf",
-                        headers={"Content-Disposition": f'inline; filename="CV_{theme}.pdf"'})
+                        headers={"Content-Disposition": _disposition("inline", name)})
 
 
 # ---- jobs ------------------------------------------------------------------
 
 def _jobs(uid):
-    state = scraper.load_state(uid)
-    return [{**r, "state": state.get(r["key"], "")} for r in watcher.attach_ai(uid, scraper.load_jobs(uid))]
+    import prefs
+    state, fb = scraper.load_state(uid), prefs.load(uid)
+    return [{**r, "state": state.get(r["key"], ""), "feedback": fb.get(r["key"], {}).get("v", 0)}
+            for r in watcher.attach_ai(uid, scraper.load_jobs(uid))]
 
 
 @app.get("/api/jobs")
@@ -250,7 +277,23 @@ def job_state(key: str, uid=Depends(user), body: dict = Body(...)):
     if body.get("state") not in ("", "shortlisted", "hidden", "applied"):
         _err("bad state")
     scraper.set_state(uid, key, body["state"])
-    return {"ok": True}
+    watched = _watch(uid, _job(uid, key)) if body["state"] == "shortlisted" else ""
+    return {"ok": True, "watching": watched}
+
+
+@app.post("/api/jobs/{key}/feedback")
+def job_feedback(key: str, uid=Depends(user), body: dict = Body(...)):
+    """Thumbs up (1) / down (-1) / clear (0). Teaches ranking + AI scoring what you want."""
+    import prefs
+    v = int(body.get("v", 0))
+    job = _job(uid, key)
+    prefs.record(uid, job, v)
+    watched = ""
+    if v > 0:
+        watched = _watch(uid, job)
+    elif v < 0:
+        scraper.set_state(uid, key, "hidden")
+    return {"ok": True, "watching": watched}
 
 
 @app.post("/api/jobs/{key}/score")
@@ -267,6 +310,7 @@ def job_apply(key: str, uid=Depends(user), body: dict = Body(default={})):
     job = _job(uid, key)
     spend_ai(uid)
     name, c, row = applier.apply(uid, "", job=job, theme=body.get("theme"))
+    _watch(uid, job)
     return {"folder": name, "tailored": c, "application": row}
 
 
@@ -312,8 +356,42 @@ def package_file(name: str, fname: str, uid=Depends(user), download: int = 0):
     p = (base / fname).resolve()
     if p.parent != base or not p.is_file():
         _err("Not found", 404)
-    disp = "attachment" if download else "inline"
-    return FileResponse(p, headers={"Content-Disposition": f'{disp}; filename="{p.name}"'})
+    nice = applier.download_name(generator.load_inputs(uid)[0], p.name)
+    return FileResponse(p, headers={"Content-Disposition": _disposition("attachment" if download else "inline", nice)})
+
+
+@app.post("/api/packages/{name}/answers")
+def package_answers(name: str, uid=Depends(user)):
+    """Ready-to-paste answers for the application form (incl. the posting's own questions)."""
+    try:
+        pkg = applier.load_package(uid, name)
+    except FileNotFoundError:
+        _err("Not found", 404)
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        _err("Form answers need ANTHROPIC_API_KEY on the server.")
+    spend_ai(uid)
+    profile, gh = generator.load_inputs(uid)
+    c = pkg["tailored"]
+    answers = generator.form_answers(profile, gh, pkg["jd"], c.get("company", ""), c.get("role", ""))
+    applier.save_extra(uid, name, "answers", answers)
+    return {"answers": answers}
+
+
+@app.post("/api/packages/{name}/interview")
+def package_interview(name: str, uid=Depends(user)):
+    """Interview prep pack: company brief, likely questions with your answers, questions to ask them."""
+    try:
+        pkg = applier.load_package(uid, name)
+    except FileNotFoundError:
+        _err("Not found", 404)
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        _err("Interview prep needs ANTHROPIC_API_KEY on the server.")
+    spend_ai(uid)
+    profile, gh = generator.load_inputs(uid)
+    c = pkg["tailored"]
+    prep = generator.interview_prep(profile, gh, pkg["jd"], c.get("company", ""), c.get("role", ""))
+    applier.save_extra(uid, name, "interview", prep)
+    return {"interview": prep}
 
 
 # ---- applications + outreach -----------------------------------------------
@@ -390,7 +468,42 @@ def overview(uid=Depends(user)):
         "top": [{k: v for k, v in r.items() if k != "desc"} for r in top],
         "last_run": meta.get("last_run"), "sources": meta.get("sources", {}),
         "watcher": {k: watcher.STATUS[k] for k in ("running", "started", "finished", "next_run")},
+        "insights": _insights(apps),
+        "todo": {"drafts": sum(a["status"] == "drafted" for a in apps),
+                 "strong_unseen": sum(watcher.match_of(r) >= thr and r["new"] and not r["state"] for r in visible),
+                 "unscored_shortlist": sum(r["state"] == "shortlisted" and "ai_match" not in r for r in rows),
+                 "notifications": any(notify.channels(uid).values()),
+                 "github": bool(github_sync.load(uid))},
     }
+
+
+def _insights(apps):
+    """What's working: reply rate (interviewing/offer) by source, CV design and match score."""
+    sent = [a for a in apps if a["status"] not in ("drafted", "")]
+    if not sent:
+        return {"sent": 0}
+
+    def group(key):
+        out = {}
+        for a in sent:
+            g = key(a) or "unknown"
+            d = out.setdefault(g, {"sent": 0, "responses": 0})
+            d["sent"] += 1
+            d["responses"] += a["status"] in tracker.POSITIVE
+        return sorted(({"name": k, **v, "rate": round(100 * v["responses"] / v["sent"])} for k, v in out.items()),
+                      key=lambda x: (-x["rate"], -x["sent"]))
+
+    def bucket(a):
+        try:
+            m = int(float(a["match"] or 0))
+        except ValueError:
+            return "unknown"
+        return "80+" if m >= 80 else "60-79" if m >= 60 else "under 60"
+
+    responses = sum(a["status"] in tracker.POSITIVE for a in sent)
+    return {"sent": len(sent), "responses": responses, "rate": round(100 * responses / len(sent)),
+            "by_source": group(lambda a: a.get("source")), "by_theme": group(lambda a: a.get("theme")),
+            "by_match": group(bucket)}
 
 
 @app.post("/api/scrape")
