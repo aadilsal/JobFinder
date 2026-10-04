@@ -37,6 +37,7 @@ class Skip(Exception):
 
 def strip_html(s):
     s = html.unescape(s or "")
+    s = re.sub(r'(?i)href=["\']mailto:([^"\'?]+)[^>]*>', r'> \1 ', s)   # keep "apply by email" addresses
     s = re.sub(r"(?i)<br\s*/?>|</p>|</li>", "\n", s)
     return re.sub(r"[ \t\r\f\v]+", " ", html.unescape(re.sub(r"<[^>]+>", " ", s))).strip()
 

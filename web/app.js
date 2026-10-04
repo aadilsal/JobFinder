@@ -831,13 +831,25 @@ async function pagePackage(el, m) {
         <div class="row" style="margin-top:8px"><button class="btn primary" id="savecl" data-busy="Rebuilding...">Save and rebuild PDF</button>
           <button class="btn" id="copycl">Copy text</button></div></div>
       <div>${pdf("Cover_Letter.pdf", "cover letter")}</div></div>`;
-    if (tab === "email") return html`<div class="field"><label>To <span class="muted">(recruiter email, saved to the tracker)</span></label><input id="to" type="email" value="${app?.contact_email || ""}" placeholder="recruiter@company.com"></div>
+    if (tab === "email") {
+      const found = pkg.emails || [];
+      const to = app?.contact_email || found[0] || "";
+      return html`<div class="field"><label>To</label><input id="to" type="email" value="${to}" placeholder="recruiter@company.com">
+          ${found.length ? html`<div class="chips" style="margin-top:6px"><span class="small muted">Found in the job post:</span>${found.map((e) =>
+            html`<button type="button" class="chip ${e === to ? "on" : ""}" data-to="${e}">${e}</button>`)}</div>`
+          : html`<div class="small muted" style="margin-top:4px">No email in the job post. It probably wants you to apply on its site (use "Open posting"); you can still email a recruiter you found on LinkedIn.</div>`}</div>
         <div class="field"><label>Subject</label><input id="subj" type="text" value="${c.email_subject}"></div>
         <div class="field"><label>Body</label><textarea id="eb" class="tall">${c.email_body}</textarea></div>
-        <div class="row"><button class="btn" id="cps">Copy subject</button><button class="btn" id="cpb">Copy body</button>
-          <a class="btn primary" id="mailto" href="#">${icon("mail")} Open in email app</a>
-          <button class="btn" id="saveem" data-busy="Saving...">Save</button></div>
-        <p class="small muted">Remember to attach CV.pdf and Cover_Letter.pdf (download them from the other tabs).</p>`;
+        <div class="notice small"><b>1.</b> Download the attachments &nbsp;
+          <a class="btn sm" href="${file("CV.pdf", 1)}">${icon("file")} CV.pdf</a>
+          <a class="btn sm" href="${file("Cover_Letter.pdf", 1)}">${icon("file")} Cover_Letter.pdf</a><br>
+          <b>2.</b> Open Gmail (everything else is filled in), drag the two PDFs into the email, and press <b>Send</b>.</div>
+        <div class="row"><button class="btn primary" id="gmail">${icon("mail")} Open in Gmail</button>
+          <button class="btn" id="mailto">Other email app</button>
+          <button class="btn" id="cpb">Copy body</button>
+          <button class="btn" id="saveem" data-busy="Saving...">Save edits</button></div>
+        <div id="sent"></div>`;
+    }
     if (tab === "outreach") return html`<p class="muted small">Recruiter and referral messages for this application. Find the recruiter on LinkedIn by searching "${c.company} recruiter" or "talent acquisition", and the hiring manager with "engineering manager ${c.company}".</p>
       <div class="grid g2"><div class="field"><label>Recipient name <span class="muted">(optional)</span></label><input id="rcp" type="text" value="${app?.contact || ""}"></div>
         <div class="field"><label>Anything to mention? <span class="muted">(optional)</span></label><input id="nts" type="text"></div></div>
@@ -871,11 +883,29 @@ async function pagePackage(el, m) {
     const scl = $("#savecl", el);
     if (scl) { scl.onclick = () => busy(scl, () => rebuild({ cover_letter: $("#cl", el).value })); $("#copycl", el).onclick = () => copy($("#cl", el).value); }
     if ($("#eb", el)) {
-      $("#cps", el).onclick = () => copy($("#subj", el).value);
+      const saveTo = async () => {
+        const to = $("#to", el).value.trim();
+        if (app && to !== app.contact_email) Object.assign(app, await api("PATCH", `/api/applications/${app.id}`, { contact_email: to }));
+      };
+      const opened = () => {
+        saveTo().catch(() => {});
+        if (!app || app.status !== "drafted") return;
+        set($("#sent", el), html`<div class="notice" style="margin-top:12px">Sent it? <button class="btn sm primary" id="markap">Mark as applied</button>
+          <span class="small muted">This starts your 7-day follow-up reminder.</span></div>`);
+        $("#markap", el).onclick = async () => {
+          Object.assign(app, await api("PATCH", `/api/applications/${app.id}`, { status: "applied" }));
+          toast("Marked as applied. We'll remind you to follow up in 7 days."); draw();
+        };
+      };
+      $$("[data-to]", el).forEach((b) => (b.onclick = () => {
+        $("#to", el).value = b.dataset.to;
+        $$("[data-to]", el).forEach((x) => x.classList.toggle("on", x === b));
+      }));
       $("#cpb", el).onclick = () => copy($("#eb", el).value);
-      $("#mailto", el).onclick = (e) => { e.preventDefault(); location.href = `mailto:${encodeURIComponent($("#to", el).value)}?subject=${encodeURIComponent($("#subj", el).value)}&body=${encodeURIComponent($("#eb", el).value)}`; };
+      $("#gmail", el).onclick = () => { openGmail($("#to", el).value, $("#subj", el).value, $("#eb", el).value); opened(); };
+      $("#mailto", el).onclick = () => { openMailto($("#to", el).value, $("#subj", el).value, $("#eb", el).value); opened(); };
       $("#saveem", el).onclick = (e) => busy(e.currentTarget, async () => {
-        if (app && $("#to", el).value !== app.contact_email) Object.assign(app, await api("PATCH", `/api/applications/${app.id}`, { contact_email: $("#to", el).value }));
+        await saveTo();
         await rebuild({ email_subject: $("#subj", el).value, email_body: $("#eb", el).value });
       });
     }
@@ -887,18 +917,31 @@ async function pagePackage(el, m) {
   draw();
 }
 
+// Gmail compose with everything pre-filled (files can't be attached through a link)
+function openGmail(to, subject, body) {
+  const q = new URLSearchParams({ view: "cm", fs: "1", to: to || "", su: subject || "", body: body || "" });
+  window.open(`https://mail.google.com/mail/?${q}`, "_blank", "noopener");
+}
+function openMailto(to, subject, body) {
+  location.href = `mailto:${encodeURIComponent(to || "")}?subject=${encodeURIComponent(subject || "")}&body=${encodeURIComponent(body || "")}`;
+}
+
 function showMessage(box, kind, r, to = "") {
+  const isEmail = !!r.subject;
   set(box, html`<div class="card" style="background:var(--panel-2)">
     <div class="spread"><h3>${KINDS[kind]}</h3><span class="small muted" id="mlen">${r.body.length} characters${kind === "linkedin_note" ? " / 300" : ""}</span></div>
-    ${r.subject ? html`<div class="field"><label>Subject</label><input type="text" id="msubj" value="${r.subject}"></div>` : ""}
+    ${isEmail ? html`<div class="field"><label>To</label><input type="email" id="mto" value="${to || ""}" placeholder="recruiter@company.com"></div>
+      <div class="field"><label>Subject</label><input type="text" id="msubj" value="${r.subject}"></div>` : ""}
     <textarea id="mbody" class="tall">${r.body}</textarea>
-    <div class="row" style="margin-top:8px">${r.subject ? html`<button class="btn" id="mcs">Copy subject</button>` : ""}<button class="btn primary" id="mcb">Copy message</button>
-      ${r.subject ? html`<a class="btn" id="mmail" href="#">${icon("mail")} Open in email app</a>` : ""}</div></div>`);
+    <div class="row" style="margin-top:8px">
+      ${isEmail ? html`<button class="btn primary" id="mgmail">${icon("mail")} Open in Gmail</button><button class="btn" id="mmail">Other email app</button>` : ""}
+      <button class="btn ${isEmail ? "" : "primary"}" id="mcb">Copy message</button></div></div>`);
   $("#mbody", box).oninput = (e) => ($("#mlen", box).textContent = `${e.target.value.length} characters${kind === "linkedin_note" ? " / 300" : ""}`);
   $("#mcb", box).onclick = () => copy($("#mbody", box).value);
-  if (r.subject) {
-    $("#mcs", box).onclick = () => copy($("#msubj", box).value);
-    $("#mmail", box).onclick = (e) => { e.preventDefault(); location.href = `mailto:${encodeURIComponent(to || "")}?subject=${encodeURIComponent($("#msubj", box).value)}&body=${encodeURIComponent($("#mbody", box).value)}`; };
+  if (isEmail) {
+    const vals = () => [$("#mto", box).value, $("#msubj", box).value, $("#mbody", box).value];
+    $("#mgmail", box).onclick = () => openGmail(...vals());
+    $("#mmail", box).onclick = () => openMailto(...vals());
   }
 }
 

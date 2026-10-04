@@ -81,8 +81,10 @@ def apply(uid, jd, company="", job=None, theme=None, log=print):
         f"Matched keywords: {', '.join(c['keywords_matched'])}\n\nGaps / things to check:\n"
         + "".join(f"- {g}\n" for g in c["gaps"]) + "\n\n## Job description\n" + jd[:6000], encoding="utf-8")
     (p / "jd.txt").write_text(jd, encoding="utf-8")
+    emails = extract_emails(jd)
     row = tracker.add(uid, company=c.get("company") or company, role=c["role"], match=c["match_score"],
-                      folder=p.name, job_url=(job or {}).get("url", ""), job_key=(job or {}).get("key", ""))
+                      folder=p.name, job_url=(job or {}).get("url", ""), job_key=(job or {}).get("key", ""),
+                      contact_email=emails[0] if emails else "")
     if job:
         scraper.set_state(uid, job["key"], "applied")
     return p.name, c, row
@@ -93,7 +95,23 @@ def load_package(uid, name):
     c = json.loads((p / "tailored.json").read_text(encoding="utf-8"))
     jd = (p / "jd.txt").read_text(encoding="utf-8") if (p / "jd.txt").exists() else ""
     files = sorted(f.name for f in p.iterdir() if f.is_file())
-    return {"folder": name, "tailored": c, "jd": jd, "files": files}
+    return {"folder": name, "tailored": c, "jd": jd, "files": files, "emails": extract_emails(jd)}
+
+
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,24}")
+_SKIP = ("noreply", "no-reply", "donotreply", "privacy", "unsubscribe", "abuse", "security@", "legal@",
+         "example.", "sentry", "wixpress", "@email.com", "@domain.com", "dpo@", "gdpr")
+_LIKELY = ("career", "jobs", "job@", "hr@", "hr.", "recruit", "talent", "hiring", "apply", "people", "cv@", "resume")
+
+
+def extract_emails(text):
+    """Addresses a candidate could send an application to, most likely first (hiring inboxes, then others)."""
+    found = []
+    for m in EMAIL_RE.findall(text or ""):
+        e = m.strip(".").lower()
+        if e not in found and not any(s in e for s in _SKIP) and not e.endswith((".png", ".jpg", ".gif")):
+            found.append(e)
+    return sorted(found, key=lambda e: (not any(w in e for w in _LIKELY), found.index(e)))
 
 
 def rerender(uid, name, edits, theme=None):
