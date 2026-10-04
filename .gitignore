@@ -16,3 +16,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# SSH keys for the server - never commit
+.keys/
+*.key
