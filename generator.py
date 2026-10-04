@@ -195,6 +195,39 @@ def apply_answers(p, answers):
     return p
 
 
+SUGGEST_SYSTEM = """You help a job seeker set up their job search. From their profile ONLY, suggest:
+- target_roles: 3-5 realistic job titles they would get interviews for now (match their seniority; mix their strongest stack and adjacent titles).
+- headline: one line like "Full Stack Engineer | React, Node.js, Python, AI" using only skills they have.
+- years_experience_text: a SHORT phrase (max 7 words) like "1.5+ years of professional experience", computed from the role dates up to today (internships doing real engineering work count). Round down, never inflate.
+- work_preferences: where they can likely work, e.g. "Remote worldwide, or onsite in Lahore". Base it on their location; never claim visas or relocation.
+Return ONLY JSON: {"target_roles": [""], "headline": "", "years_experience_text": "", "work_preferences": ""}"""
+
+SUGGESTABLE = ("target_roles", "headline", "years_experience_text", "work_preferences")
+
+
+def suggest_fields(p):
+    """AI suggestions for the job-search fields people usually leave blank. Falls back to simple rules."""
+    if os.getenv("ANTHROPIC_API_KEY"):
+        small = {k: p.get(k) for k in ("location", "base_summary", "skills", "experience", "projects", "education")}
+        out = _ask(SUGGEST_SYSTEM, f"<profile>\n{json.dumps(small)}\n</profile>", 800)
+        out["target_roles"] = [r for r in out.get("target_roles", []) if r][:5]
+        return {k: out.get(k) for k in SUGGESTABLE if out.get(k)}
+    titles = [e.get("title", "") for e in p.get("experience", []) if e.get("include", True) and e.get("title")]
+    roles = list(dict.fromkeys(t for t in titles if "intern" not in t.lower())) or ["Software Engineer"]
+    city = (p.get("location") or "").split(",")[0].strip()
+    return {"target_roles": roles[:4],
+            "work_preferences": "Remote worldwide" + (f", or onsite in {city}" if city else "")}
+
+
+def fill_blanks(p, suggestions):
+    """Only fill fields the user hasn't filled themselves."""
+    p = dict(p)
+    for k, v in suggestions.items():
+        if not p.get(k):
+            p[k] = v
+    return p
+
+
 def search_from_profile(p, cfg):
     """Turn a profile into this user's search settings (they can fine-tune them in Settings)."""
     roles = [r.lower() for r in p.get("target_roles", []) if r]

@@ -163,6 +163,20 @@ def profile_parse(uid=Depends(user), body: dict = Body(...)):
     return {"profile": p, "questions": generator.profile_gaps(p)}
 
 
+@app.post("/api/profile/suggest")
+def profile_suggest(uid=Depends(user), body: dict = Body(...)):
+    """Fill target roles, headline, years and work preferences. overwrite=False only fills blanks."""
+    p = generator.normalize_profile(body.get("profile") or {})
+    if os.getenv("ANTHROPIC_API_KEY"):
+        spend_ai(uid)
+    try:
+        s = generator.suggest_fields(p)
+    except Exception as e:
+        _err(f"Couldn't suggest right now: {e}")
+    p = {**p, **s} if body.get("overwrite") else generator.fill_blanks(p, s)
+    return {"profile": p, "suggested": s, "questions": generator.profile_gaps(p)}
+
+
 @app.post("/api/profile/answers")
 def profile_answers(uid=Depends(user), body: dict = Body(...)):
     p = generator.apply_answers(generator.normalize_profile(body.get("profile") or {}), body.get("answers") or {})

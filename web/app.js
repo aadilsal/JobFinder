@@ -377,7 +377,9 @@ function profileForm(p, questions = []) {
       : html`<input id="pf-${key}" data-pf="${key}" type="${type}" value="${value}" ${miss.has(key) ? raw('style="border-color:var(--bad)"') : ""}>`}
   </div>`;
   const L = p.links || {};
-  return html`<div class="grid g2">
+  return html`<div class="spread" style="margin-bottom:12px"><span class="small muted">Job titles, headline, experience and where you can work can be filled for you.</span>
+      <button type="button" class="btn sm" id="suggest" data-busy="Thinking...">✨ Suggest with AI</button></div>
+    <div class="grid g2">
       ${f("name", "Full name", p.name)}${f("headline", "Headline", p.headline, "text", "e.g. Full Stack Engineer | React, Node.js")}
       ${f("email", "Email", p.email, "email")}${f("phone", "Phone", p.phone, "text", "with country code")}
       ${f("location", "Location", p.location, "text", "City, Country")}${f("years_experience_text", "Experience", p.years_experience_text, "text", "e.g. 2+ years of professional experience")}
@@ -386,6 +388,26 @@ function profileForm(p, questions = []) {
     </div>
     ${f("work_preferences", "Where can you work?", p.work_preferences, "text", "remote worldwide, onsite city, relocation...")}
     ${f("base_summary", "Professional summary", p.base_summary, "textarea")}`;
+}
+
+const SUGGESTABLE = ["target_roles", "headline", "years_experience_text", "work_preferences"];
+
+// "Suggest with AI": fills the 4 job-search fields in place, keeping every other edit on the page
+function bindSuggest(el, getBase) {
+  const btn = $("#suggest", el);
+  if (!btn) return;
+  btn.onclick = () => busy(btn, async () => {
+    const current = readAdvanced(el, readProfileForm(el, getBase()));
+    const r = await api("POST", "/api/profile/suggest", { profile: current, overwrite: true });
+    for (const k of SUGGESTABLE) {
+      const input = $(`[data-pf="${k}"]`, el), v = r.suggested[k];
+      if (input && v) {
+        input.value = Array.isArray(v) ? v.join(", ") : v;
+        input.style.borderColor = "var(--accent)";
+      }
+    }
+    toast("Filled in. Edit anything that's off, then save.");
+  });
 }
 
 function readProfileForm(el, base) {
@@ -512,8 +534,22 @@ async function pageOnboarding(el) {
     <div class="brand" style="justify-content:center"><img src="/icons/icon-192.png" alt="">jobkit</div>
     <div class="steps">${[1, 2, 3].map((i) => html`<span class="${i <= step ? "on" : ""}"></span>`)}</div>${body}</div>`);
 
+  let suggested = [];
+  // auto-fill target roles etc. once we know something about the person (blank fields only)
+  const autoSuggest = async () => {
+    const knows = (profile.experience || []).length || Object.keys(profile.skills || {}).length || profile.base_summary;
+    if (!knows || !SUGGESTABLE.some((k) => !profile[k] || (Array.isArray(profile[k]) && !profile[k].length))) return;
+    try {
+      const r = await api("POST", "/api/profile/suggest", { profile, overwrite: false });
+      suggested = SUGGESTABLE.filter((k) => r.suggested[k] && JSON.stringify(profile[k] || "") !== JSON.stringify(r.profile[k]));
+      ({ profile, questions } = r);
+    } catch { /* suggestions are optional */ }
+  };
+
   if (S.me.has_profile) {
+    set(el, html`<div class="empty"><span class="spinner"></span> Filling in your job-search details...</div>`);
     ({ profile, questions } = await api("GET", "/api/profile"));
+    await autoSuggest();
     return review();
   }
   wrap(1, html`<div class="card">
@@ -531,6 +567,8 @@ async function pageOnboarding(el) {
     set($("#st", el), html`<span class="spinner"></span> Reading ${file.name}... this takes about 20 seconds.`);
     try {
       ({ profile, questions } = await api("POST", "/api/profile/parse", { filename: file.name, data_b64: await readFileB64(file) }));
+      set($("#st", el), html`<span class="spinner"></span> Suggesting job titles that fit you...`);
+      await autoSuggest();
       review();
     } catch (err) { set($("#st", el), html`<span style="color:var(--bad)">${err.message}</span>`); }
   };
@@ -539,10 +577,13 @@ async function pageOnboarding(el) {
     const required = questions.filter((q) => q.required);
     wrap(2, html`<h1>Check your details</h1>
       <p class="muted">${required.length ? `We need ${required.length} more thing${required.length > 1 ? "s" : ""} (marked *) before we can search for you.` : "Looks complete. Fix anything that's wrong, then continue."}</p>
+      ${suggested.length ? html`<div class="notice">✨ We suggested your ${suggested.map((k) => ({ target_roles: "target job titles", headline: "headline",
+          years_experience_text: "experience", work_preferences: "work locations" }[k])).join(", ")} from your CV. Change anything that's off.</div>` : ""}
       ${questionInputs(questions)}
       <div class="card">${profileForm(profile, questions)}</div>
       ${advancedEditor(profile)}
       <div class="row end" style="margin-top:16px"><button class="btn primary" id="next" data-busy="Saving...">Continue</button></div>`);
+    bindSuggest(el, () => profile);
     $("#next", el).onclick = (e) => busy(e.currentTarget, async () => {
       const p = readAdvanced(el, readProfileForm(el, profile));
       ({ profile, questions } = await api("POST", "/api/profile/answers", { profile: p, answers: readAnswers(el) }));
@@ -957,6 +998,7 @@ async function pageProfile(el, m, q) {
         <div class="card"><div class="spread"><label class="switch"><input type="checkbox" id="rb"> Also rebuild my job-search keywords from this profile</label>
           <div class="row"><label class="btn" for="recv" style="margin:0">Re-import from a new CV</label><input id="recv" type="file" accept=".pdf,.docx,.txt,.md" class="hidden">
           <button class="btn primary" id="save" data-busy="Saving...">Save profile</button></div></div></div>`);
+      bindSuggest(body, () => p);
       $("#save", body).onclick = (e) => busy(e.currentTarget, async () => {
         let np = readAdvanced(body, readProfileForm(body, p));
         if ($$("[data-q]", body).length) np = (await api("POST", "/api/profile/answers", { profile: np, answers: readAnswers(body) })).profile;
