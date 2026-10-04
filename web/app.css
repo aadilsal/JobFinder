@@ -155,6 +155,17 @@ td select, td input { min-width: 120px; padding: 6px 8px; }
 .steps span.on { background: var(--accent); }
 .drop { border: 2px dashed var(--border); border-radius: 12px; padding: 32px 16px; text-align: center; cursor: pointer; display: block; }
 .drop:hover { border-color: var(--accent); }
+.adv-sec { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.adv-sec:first-child { border-top: 0; padding-top: 0; }
+.adv-sec [data-adv-list] { margin-top: 10px; }
+.adv-item { border: 1px solid var(--border); background: var(--panel-2); border-radius: 10px; padding: 14px 14px 10px; margin-bottom: 10px; }
+.adv-item .field { margin-bottom: 10px; }
+.adv-item textarea { min-height: 90px; }
+.adv-item input, .adv-item textarea { background: var(--panel); }
+.adv-row { display: flex; gap: 10px; align-items: flex-start; }
+.adv-item[data-kind="skill"] { padding-bottom: 4px; }
+@media (max-width: 600px) { .adv-row { flex-wrap: wrap; } .adv-row .field { flex: 1 1 100% !important; } }
+details > summary { cursor: pointer; }
 .theme-card { border: 1px solid var(--border); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
 .theme-card.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .swatch { height: 70px; border-radius: 8px; border: 1px solid var(--border); background: #fff; padding: 10px; display: flex; flex-direction: column; gap: 5px; }

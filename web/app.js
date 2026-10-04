@@ -400,21 +400,98 @@ function readProfileForm(el, base) {
   return p;
 }
 
+// ---- structured editor for experience / projects / skills / education ----
+const fieldIn = (f, label, value, ph = "") => html`<div class="field"><label>${label}</label><input type="text" data-f="${f}" value="${value || ""}" placeholder="${ph}"></div>`;
+const bulletsIn = (value, ph) => html`<div class="field"><label>Achievements <span class="muted">(one per line, numbers help)</span></label>
+  <textarea data-f="bullets" placeholder="${ph}">${(value || []).join("\n")}</textarea></div>`;
+const delBtn = (what) => html`<button type="button" class="btn sm danger" data-adv-del>Remove ${what}</button>`;
+
+const ADV_ITEMS = {
+  skill: (s) => html`<div class="adv-item" data-kind="skill"><div class="adv-row">
+      <div class="field" style="flex:0 0 200px"><label>Group</label><input type="text" data-f="label" value="${s.label || ""}" placeholder="e.g. Backend"></div>
+      <div class="field" style="flex:1"><label>Skills <span class="muted">(comma separated)</span></label><input type="text" data-f="items" value="${(s.items || []).join(", ")}" placeholder="Node.js, Express, FastAPI"></div>
+      <button type="button" class="btn sm danger" data-adv-del aria-label="Remove group" style="margin-top:22px">&times;</button></div></div>`,
+  exp: (e) => html`<div class="adv-item" data-kind="exp" data-id="${e.id || ""}">
+      <div class="grid g2">${fieldIn("title", "Job title", e.title, "Full Stack Engineer")}${fieldIn("company", "Company", e.company, "Acme")}
+        ${fieldIn("location", "Location", e.location, "Lahore / Remote")}${fieldIn("dates", "Dates", e.dates, "Jan 2024 - Present")}</div>
+      ${bulletsIn(e.bullets, "Built X with Y, which improved Z by ~30%")}
+      <div class="spread"><label class="switch"><input type="checkbox" data-f="include" ${e.include === false ? "" : "checked"}> Show on my CVs</label>${delBtn("role")}</div></div>`,
+  proj: (p) => html`<div class="adv-item" data-kind="proj" data-id="${p.id || ""}">
+      <div class="grid g2">${fieldIn("name", "Project name", p.name, "TaskFlow - Team Task Manager")}${fieldIn("tech", "Tech", p.tech, "Next.js, Node.js, PostgreSQL")}</div>
+      ${fieldIn("url", "Link (optional)", p.url, "github.com/you/project")}
+      ${bulletsIn(p.bullets, "What you built and the result")}
+      <div class="row end">${delBtn("project")}</div></div>`,
+  edu: (e) => html`<div class="adv-item" data-kind="edu"><div class="grid g3">
+      ${fieldIn("degree", "Degree", e.degree, "BS Computer Science")}${fieldIn("school", "School", e.school, "FAST-NUCES, Lahore")}${fieldIn("dates", "Dates", e.dates, "2022 - 2026")}</div>
+      <div class="row end">${delBtn("education")}</div></div>`,
+};
+
 function advancedEditor(p) {
-  const adv = { skills: p.skills, experience: p.experience, projects: p.projects, education: p.education, certifications: p.certifications };
-  return html`<details class="card"><summary><b>Experience, projects, skills and education</b>
+  const sec = (title, kind, items, hint = "") => html`<div class="adv-sec">
+    <div class="spread"><h3 style="margin:0">${title}</h3><button type="button" class="btn sm" data-adv-add="${kind}">+ Add</button></div>
+    ${hint ? html`<p class="small muted" style="margin:4px 0 10px">${hint}</p>` : ""}
+    <div data-adv-list="${kind}">${items.map((x) => ADV_ITEMS[kind](x))}</div></div>`;
+  const skills = Object.entries(p.skills || {}).map(([label, items]) => ({ label, items }));
+  return html`<details class="card" open><summary><b>Experience, projects, skills and education</b>
       <span class="muted small">&middot; ${p.experience?.length || 0} roles, ${p.projects?.length || 0} projects, ${Object.values(p.skills || {}).flat().length} skills</span></summary>
-    <p class="small muted" style="margin-top:10px">Edit as JSON. Every fact on your CVs comes only from here, so keep it true and specific (numbers help).</p>
-    <textarea id="adv" class="tall mono">${JSON.stringify(adv, null, 2)}</textarea></details>`;
+    <p class="small muted" style="margin-top:10px">Every fact on your CVs comes only from here, so keep it true and specific.</p>
+    <div id="adv">
+      ${sec("Experience", "exp", p.experience || [], "Untick \"Show on my CVs\" to keep a role saved but hidden.")}
+      ${sec("Projects", "proj", p.projects || [])}
+      ${sec("Skills", "skill", skills, "Grouped rows, most important first. Only skills listed here can appear on a CV.")}
+      ${sec("Education", "edu", p.education || [])}
+      <div class="adv-sec"><h3 style="margin:0 0 6px">Certifications <span class="muted small">(one per line)</span></h3>
+        <textarea id="adv-certs" style="min-height:70px">${(p.certifications || []).join("\n")}</textarea></div>
+    </div></details>`;
 }
 
 function readAdvanced(el, p) {
-  const t = $("#adv", el);
-  if (!t) return p;
-  let adv;
-  try { adv = JSON.parse(t.value); } catch (e) { throw new Error("The JSON in 'Experience, projects, skills' has a syntax error: " + e.message); }
-  return { ...p, ...adv };
+  const box = $("#adv", el);
+  if (!box) return p;
+  const val = (item, f) => ($(`[data-f="${f}"]`, item)?.value || "").trim();
+  const items = (kind) => $$(`[data-adv-list="${kind}"] > .adv-item`, box);
+  const slug = (s, i) => (s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "item") + (i ? `-${i}` : "");
+  const byId = (list) => Object.fromEntries((list || []).map((x) => [x.id, x]));
+  const oldExp = byId(p.experience), oldProj = byId(p.projects);
+  const used = new Set();
+  const uid = (id, base) => { let i = 0, k = id || slug(base); while (used.has(k)) k = slug(base, ++i); used.add(k); return k; };
+
+  const experience = items("exp").map((it) => {
+    const e = { title: val(it, "title"), company: val(it, "company"), location: val(it, "location"), dates: val(it, "dates"),
+                bullets: splitLines(val(it, "bullets")) };
+    if (!e.title && !e.company) return null;
+    const id = uid(it.dataset.id, e.company || e.title);
+    return { ...(oldExp[id] || {}), id, ...e, include: $('[data-f="include"]', it).checked };
+  }).filter(Boolean);
+  const projects = items("proj").map((it) => {
+    const pr = { name: val(it, "name"), tech: val(it, "tech"), url: val(it, "url"), bullets: splitLines(val(it, "bullets")) };
+    if (!pr.name) return null;
+    const id = uid(it.dataset.id, pr.name);
+    return { ...(oldProj[id] || {}), id, ...pr };
+  }).filter(Boolean);
+  const skills = {};
+  items("skill").forEach((it) => {
+    const label = val(it, "label") || "Skills", list = splitList(val(it, "items"));
+    if (list.length) skills[label] = [...(skills[label] || []), ...list];
+  });
+  const education = items("edu").map((it) => ({ degree: val(it, "degree"), school: val(it, "school"), dates: val(it, "dates") }))
+    .filter((e) => e.degree || e.school);
+  const certifications = splitLines($("#adv-certs", box).value);
+  return { ...p, experience, projects, skills, education, certifications };
 }
+
+// + Add / Remove buttons inside the editor (works wherever it is rendered)
+document.addEventListener("click", (e) => {
+  const add = e.target.closest("[data-adv-add]");
+  if (add) {
+    const list = $(`[data-adv-list="${add.dataset.advAdd}"]`, add.closest(".adv-sec"));
+    list.insertAdjacentHTML("beforeend", fmt(ADV_ITEMS[add.dataset.advAdd]({})));
+    $("input, textarea", list.lastElementChild)?.focus();
+    return;
+  }
+  const del = e.target.closest("[data-adv-del]");
+  if (del) del.closest(".adv-item").remove();
+});
 
 function questionInputs(questions) {
   const extra = questions.filter((q) => !CORE.includes(q.key));
